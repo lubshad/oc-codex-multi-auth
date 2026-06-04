@@ -136,6 +136,7 @@ vi.mock("../lib/config.js", () => ({
 	getCodexTuiV2: () => false,
 	getCodexTuiColorProfile: () => "ansi16",
 	getCodexTuiGlyphMode: () => "ascii",
+	getCodexTuiMaskEmail: () => false,
 	getBeginnerSafeMode: () => false,
 	loadPluginConfig: () => ({}),
 }));

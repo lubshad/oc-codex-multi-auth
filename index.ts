@@ -82,6 +82,7 @@ import {
 	getCodexTuiColorProfile,
 	getCodexTuiGlyphMode,
 	getBeginnerSafeMode,
+	getCodexTuiMaskEmail,
 	loadPluginConfig,
 } from "./lib/config.js";
 import {
@@ -118,6 +119,7 @@ import {
         parseRateLimitReason,
 	lookupCodexCliTokensByEmail,
 } from "./lib/accounts.js";
+import { resolveDisplayEmail } from "./lib/account-display.js";
 import {
 	getStoragePath,
 	loadAccounts,
@@ -856,6 +858,10 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			return applyUiRuntimeFromConfig(loadPluginConfig());
 		};
 
+		const resolveMaskEmail = (): boolean => {
+			return getCodexTuiMaskEmail(loadPluginConfig());
+		};
+
 		const getStatusMarker = (
 			ui: UiRuntimeOptions,
 			status: "ok" | "warning" | "error",
@@ -886,8 +892,9 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				accountNote?: string;
 			} | undefined,
 			index: number,
+			options: { maskEmail?: boolean } = {},
 		): string => {
-			const email = account?.email?.trim();
+			const email = resolveDisplayEmail(account?.email, options.maskEmail ?? false);
 			const workspace = account?.accountLabel?.trim();
 			const accountId = formatAccountIdForDisplay(account?.accountId);
 			const tags =
@@ -1386,6 +1393,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			resolveUiRuntime,
 			getStatusMarker,
 			formatCommandAccountLabel,
+			resolveMaskEmail,
 			normalizeAccountTags,
 			supportsInteractiveMenus,
 			promptAccountIndexSelection,
@@ -1513,6 +1521,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 				const fastSessionMaxInputItems = getFastSessionMaxInputItems(pluginConfig);
 				const beginnerSafeMode = getBeginnerSafeMode(pluginConfig);
 				beginnerSafeModeEnabled = beginnerSafeMode;
+				const maskEmailEnabled = getCodexTuiMaskEmail(pluginConfig);
 				const retryProfile = beginnerSafeMode
 					? "conservative"
 					: getRetryProfile(pluginConfig);
@@ -1920,7 +1929,9 @@ while (attempted.size < Math.max(1, accountCount)) {
 				runtimeMetrics.lastError = (err as Error)?.message ?? String(err);
 				runtimeMetrics.lastErrorCategory = "auth-refresh";
 				const failures = await accountManager.incrementAuthFailures(account);
-				const accountLabel = formatAccountLabel(account, account.index);
+				const accountLabel = formatAccountLabel(account, account.index, {
+					maskEmail: maskEmailEnabled,
+				});
 				
 				if (failures >= ACCOUNT_LIMITS.MAX_AUTH_FAILURES_BEFORE_REMOVAL) {
 					const removedCount = accountManager.removeAccountsWithSameRefreshToken(account);
@@ -1999,7 +2010,9 @@ while (attempted.size < Math.max(1, accountCount)) {
 													rateLimitToastDebounceMs,
 												)
 											) {
-												const accountLabel = formatAccountLabel(account, account.index);
+												const accountLabel = formatAccountLabel(account, account.index, {
+													maskEmail: maskEmailEnabled,
+												});
 												await showToast(
 													`Using ${accountLabel} (${account.index + 1}/${accountCount})`,
 													"info",
@@ -2167,7 +2180,9 @@ while (attempted.size < Math.max(1, accountCount)) {
 
 			const workspaceDeactivated = isDeactivatedWorkspaceError(errorBody, response.status);
 				if (workspaceDeactivated) {
-					const accountLabel = formatAccountLabel(account, account.index);
+					const accountLabel = formatAccountLabel(account, account.index, {
+						maskEmail: maskEmailEnabled,
+					});
 					accountManager.refundToken(account, modelFamily, model);
 					accountManager.recordFailure(account, modelFamily, model);
 				account.lastSwitchReason = "rotation";
@@ -2986,6 +3001,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 								let ok = 0;
 								let disabled = 0;
 								let errors = 0;
+								const maskEmailEnabled = getCodexTuiMaskEmail(loadPluginConfig());
 
 								console.log(
 									`\nChecking ${deepProbe ? "full account health" : "quotas"} for all accounts...\n`,
@@ -2994,7 +3010,10 @@ while (attempted.size < Math.max(1, accountCount)) {
 								for (let i = 0; i < total; i += 1) {
 									const account = workingStorage.accounts[i];
 									if (!account) continue;
-									const label = account.email ?? account.accountLabel ?? `Account ${i + 1}`;
+									const label =
+										account.accountLabel?.trim() ||
+										resolveDisplayEmail(account.email, maskEmailEnabled) ||
+										`Account ${i + 1}`;
 									if (account.enabled === false) {
 										disabled += 1;
 										console.log(`[${i + 1}/${total}] ${label}: DISABLED`);
@@ -3250,13 +3269,17 @@ while (attempted.size < Math.max(1, accountCount)) {
 								}
 
 								console.log("\nVerifying flagged accounts...\n");
+								const maskEmailEnabled = getCodexTuiMaskEmail(loadPluginConfig());
 								const remaining: FlaggedAccountMetadataV1[] = [];
 								const restored: TokenSuccessWithAccount[] = [];
 
 								for (let i = 0; i < flaggedStorage.accounts.length; i += 1) {
 									const flagged = flaggedStorage.accounts[i];
 									if (!flagged) continue;
-									const label = flagged.email ?? flagged.accountLabel ?? `Flagged ${i + 1}`;
+									const label =
+										flagged.accountLabel?.trim() ||
+										resolveDisplayEmail(flagged.email, maskEmailEnabled) ||
+										`Flagged ${i + 1}`;
 									if (flagged.flaggedReason === "workspace-deactivated") {
 										console.log(
 											`[${i + 1}/${flaggedStorage.accounts.length}] ${label}: STILL FLAGGED (workspace deactivated)`,
@@ -3397,6 +3420,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 
 									const menuResult = await promptLoginMode(existingAccounts, {
 										flaggedCount: flaggedStorage.accounts.length,
+										maskEmail: getCodexTuiMaskEmail(loadPluginConfig()),
 									});
 
 									if (menuResult.mode === "cancel") {

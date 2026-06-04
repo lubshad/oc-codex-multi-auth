@@ -21,6 +21,7 @@ export function createCodexRemoveTool(ctx: ToolContext): ToolDefinition {
 		promptAccountIndexSelection,
 		supportsInteractiveMenus,
 		formatCommandAccountLabel,
+		resolveMaskEmail,
 		getStatusMarker,
 		cachedAccountManagerRef,
 		accountManagerPromiseRef,
@@ -50,6 +51,7 @@ export function createCodexRemoveTool(ctx: ToolContext): ToolDefinition {
 			confirm,
 		}: { index?: number; confirm?: boolean } = {}) {
 			const ui = resolveUiRuntime();
+			const maskEmail = resolveMaskEmail();
 			if (confirm !== true) {
 				const guidance =
 					"codex-remove requires confirm=true to proceed. " +
@@ -145,7 +147,7 @@ export function createCodexRemoveTool(ctx: ToolContext): ToolDefinition {
 				return `Account ${resolvedIndex} not found.`;
 			}
 
-			const label = formatCommandAccountLabel(account, targetIndex);
+			const label = formatCommandAccountLabel(account, targetIndex, { maskEmail });
 
 			storage.accounts.splice(targetIndex, 1);
 

@@ -26,6 +26,7 @@ import {
 } from "../auth/token-utils.js";
 import { getMissingRequiredOAuthScopes } from "../auth/scopes.js";
 import { getHealthTracker, getTokenTracker } from "../rotation.js";
+import { remapRateLimitBackoffAfterRemoval } from "../request/rate-limit-backoff.js";
 import { logWarn } from "../logger.js";
 
 export interface ManagedAccount {
@@ -209,7 +210,7 @@ export class AccountState {
 						`Stored OAuth fallback is missing required OAuth scope(s): ${fallbackMissingOAuthScopes.join(", ")}. Re-auth required.`,
 					);
 					this.accounts.push({
-						index: 0,
+						index: this.accounts.length,
 						accountId: fallbackAccountId,
 						organizationId: undefined,
 						accountIdSource: fallbackAccountId ? "token" : undefined,
@@ -470,6 +471,14 @@ export class AccountState {
 		this.accounts.forEach((acc, index) => {
 			acc.index = index;
 		});
+
+		// Rotation heuristic state (health score, token bucket, rate-limit
+		// backoff) is keyed by positional account index. Now that survivors have
+		// been reindexed, remap that state so each account keeps its own history
+		// instead of inheriting the removed (or a shifted neighbor's) state.
+		getHealthTracker().remapAfterRemoval(idx);
+		getTokenTracker().remapAfterRemoval(idx);
+		remapRateLimitBackoffAfterRemoval(idx);
 
 		if (this.accounts.length === 0) {
 			for (const family of MODEL_FAMILIES) {

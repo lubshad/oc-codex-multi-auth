@@ -1124,12 +1124,26 @@ describe('Fetch Helpers Module', () => {
 			expect(rateLimit?.retryAfterMs).toBeGreaterThan(0);
 		});
 
-	it('normalizes small retryAfterMs values as seconds', async () => {
+	it('treats retry_after_ms as milliseconds verbatim (no seconds rescale)', async () => {
+		// `retry_after_ms` is, by name, already in milliseconds. A small value
+		// like 5 means 5ms — it must NOT be rescaled to 5000ms. (Regression
+		// guard for the unit-confusion bug where retry_after_ms and retry_after
+		// were collapsed and run through a <1000 "looks like seconds" heuristic.)
 		const body = { error: { message: 'rate limited', retry_after_ms: 5 } };
 		const response = new Response(JSON.stringify(body), { status: 429 });
-		
+
 		const { rateLimit } = await handleErrorResponse(response);
-		
+
+		expect(rateLimit?.retryAfterMs).toBe(5);
+	});
+
+	it('treats retry_after (no _ms suffix) as seconds', async () => {
+		// `retry_after` is seconds; 5 means 5000ms.
+		const body = { error: { message: 'rate limited', retry_after: 5 } };
+		const response = new Response(JSON.stringify(body), { status: 429 });
+
+		const { rateLimit } = await handleErrorResponse(response);
+
 		expect(rateLimit?.retryAfterMs).toBe(5000);
 	});
 

@@ -120,6 +120,7 @@ import {
 	lookupCodexCliTokensByEmail,
 } from "./lib/accounts.js";
 import { resolveDisplayEmail } from "./lib/account-display.js";
+import { CodexAuthError } from "./lib/errors.js";
 import {
 	getStoragePath,
 	loadAccounts,
@@ -1279,8 +1280,25 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 		};
 
 		const invalidateAccountManagerCache = (): void => {
+			// Dispose the outgoing manager so we don't leak its shutdown handler
+			// into the global cleanup queue or leave a pending debounce timer
+			// pointing at a stale instance. Flush first (best-effort, in the
+			// background) so any queued debounced save is not silently dropped.
+			const previous = cachedAccountManager;
 			cachedAccountManager = null;
 			accountManagerPromise = null;
+			if (previous) {
+				void previous
+					.flushPendingSave()
+					.catch((error: unknown) => {
+						logWarn(
+							`Failed to flush pending save while invalidating account manager: ${error instanceof Error ? error.message : String(error)}`,
+						);
+					})
+					.finally(() => {
+						previous.disposeShutdownHandler();
+					});
+			}
 		};
 
 		const persistAuthenticatedSelections = async (
@@ -1929,6 +1947,33 @@ while (attempted.size < Math.max(1, accountCount)) {
 				runtimeMetrics.accountRotations++;
 				runtimeMetrics.lastError = (err as Error)?.message ?? String(err);
 				runtimeMetrics.lastErrorCategory = "auth-refresh";
+
+				// Transient refresh failures (network blip / upstream 5xx) must NOT
+				// count toward permanent account removal — the credentials are still
+				// valid and a flaky network or outage would otherwise silently delete
+				// them. Cool the account down briefly and rotate instead.
+				const isTransientRefreshFailure =
+					err instanceof CodexAuthError && err.retryable === true;
+				if (isTransientRefreshFailure) {
+					const cooledCount = accountManager.markAccountsWithRefreshTokenCoolingDown(
+						account.refreshToken,
+						ACCOUNT_LIMITS.AUTH_FAILURE_COOLDOWN_MS,
+						"auth-failure",
+					);
+					if (cooledCount <= 0) {
+						accountManager.markAccountCoolingDown(
+							account,
+							ACCOUNT_LIMITS.AUTH_FAILURE_COOLDOWN_MS,
+							"auth-failure",
+						);
+					}
+					accountManager.saveToDiskDebounced();
+					logWarn(
+						`[${PLUGIN_NAME}] Transient auth refresh failure for account ${account.index + 1} (${err.refreshFailureReason ?? "unknown"}${err.statusCode ? ` ${err.statusCode}` : ""}); cooling down without counting toward removal.`,
+					);
+					continue;
+				}
+
 				const failures = await accountManager.incrementAuthFailures(account);
 				const accountLabel = formatAccountLabel(account, account.index, {
 					maskEmail: maskEmailEnabled,
@@ -2043,7 +2088,11 @@ while (attempted.size < Math.max(1, accountCount)) {
 									logWarn(
 										`Skipping account ${account.index + 1}: local token bucket depleted for ${modelFamily}${model ? `:${model}` : ""}`,
 									);
-									break;
+									// Skip THIS account and rotate to the next one. `account.index` is
+									// already in `attempted` (added above), so the traversal loop guard
+									// prevents reselecting it and terminates once all are exhausted.
+									// Using `break` here would abandon every other healthy account.
+									continue;
 								}
 
 							// RC-8: per-(account, family) circuit-breaker key. The breaker gates
@@ -2213,12 +2262,13 @@ while (attempted.size < Math.max(1, accountCount)) {
 					);
 				}
 
-					// Keep deactivated workspace cleanup aligned with the existing
-					// refresh-token removal path. saveToDiskDebounced reuses the
-					// storage temp-file + EPERM/EBUSY retry path covered in
-					// test/storage.test.ts, and surfaced persistence failures stay
-					// sanitized by the redaction checks in test/login-runner.test.ts.
-					const removedCount = accountManager.removeAccountsWithSameRefreshToken(account);
+					// Remove ONLY the deactivated workspace, scoped by workspace
+					// identity (org/account id). A single multi-org OAuth login
+					// produces sibling accounts that share one refresh token but are
+					// independently valid; removing all refresh-token siblings here
+					// would silently drop still-valid workspaces from rotation. The
+					// refresh token itself is still good, so siblings must survive.
+					const removedCount = accountManager.removeAccountsByWorkspaceIdentity(account);
 					if (removedCount > 0) {
 						accountManager.saveToDiskDebounced();
 						restartAccountTraversalAfterWorkspaceDeactivation = true;
@@ -2570,10 +2620,12 @@ while (attempted.size < Math.max(1, accountCount)) {
 										"warning",
 										{ duration: toastDurationMs },
 									);
-									accountManager.refundToken(account, modelFamily, model);
-									accountManager.recordFailure(account, modelFamily, model);
 									await sleep(addJitter(emptyResponseRetryDelayMs, 0.2));
-									break;
+									// Re-issue against the SAME account by re-entering the inner
+									// request loop. Using `break` here exited to account rotation,
+									// which is a no-op for single-account pools and surfaced a
+									// misleading "all accounts failed" 503 instead of retrying.
+									continue;
 								}
 								logWarn(`Empty response after ${emptyResponseMaxRetries} retries. Returning as-is.`);
 							}

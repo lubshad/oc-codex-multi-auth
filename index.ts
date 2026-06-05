@@ -944,9 +944,10 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			if (!supportsInteractiveMenus()) return null;
 			try {
 				const { select } = await import("./lib/ui/select.js");
+				const maskEmail = resolveMaskEmail();
 				const selected = await select<number>(
 					storage.accounts.map((account, index) => ({
-						label: formatCommandAccountLabel(account, index),
+						label: formatCommandAccountLabel(account, index, { maskEmail }),
 						value: index,
 					})),
 					{
@@ -3418,9 +3419,10 @@ while (attempted.size < Math.max(1, accountCount)) {
 										};
 									});
 
+									const maskEmailEnabled = getCodexTuiMaskEmail(loadPluginConfig());
 									const menuResult = await promptLoginMode(existingAccounts, {
 										flaggedCount: flaggedStorage.accounts.length,
-										maskEmail: getCodexTuiMaskEmail(loadPluginConfig()),
+										maskEmail: maskEmailEnabled,
 									});
 
 									if (menuResult.mode === "cancel") {
@@ -3466,7 +3468,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 													),
 												});
 												invalidateAccountManagerCache();
-												console.log(`\nDeleted ${target.email ?? `Account ${menuResult.deleteAccountIndex + 1}`}.\n`);
+												console.log(`\nDeleted ${resolveDisplayEmail(target.email, maskEmailEnabled) ?? `Account ${menuResult.deleteAccountIndex + 1}`}.\n`);
 											}
 											continue;
 										}
@@ -3478,7 +3480,7 @@ while (attempted.size < Math.max(1, accountCount)) {
 												await saveAccounts(workingStorage);
 												invalidateAccountManagerCache();
 												console.log(
-													`\n${target.email ?? `Account ${menuResult.toggleAccountIndex + 1}`} ${target.enabled === false ? "disabled" : "enabled"}.\n`,
+													`\n${resolveDisplayEmail(target.email, maskEmailEnabled) ?? `Account ${menuResult.toggleAccountIndex + 1}`} ${target.enabled === false ? "disabled" : "enabled"}.\n`,
 												);
 											}
 											continue;

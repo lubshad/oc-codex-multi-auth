@@ -4689,6 +4689,76 @@ describe("OpenAIOAuthPlugin persistAccountPool", () => {
 		});
 	});
 
+	it("masks the email in the interactive delete confirmation when maskEmail is enabled", async () => {
+		const cliModule = await import("../lib/cli.js");
+		const configModule = await import("../lib/config.js");
+
+		vi.mocked(configModule.getCodexTuiMaskEmail).mockReturnValue(true);
+
+		mockStorage.accounts = [
+			{ refreshToken: "r1", email: "user@example.com", accountId: "acc-1" },
+		];
+
+		vi.mocked(cliModule.promptLoginMode)
+			.mockReset()
+			.mockResolvedValueOnce({ mode: "manage", deleteAccountIndex: 0 })
+			.mockResolvedValue({ mode: "cancel" });
+
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
+		const autoMethod = plugin.auth.methods[0] as unknown as {
+			authorize: (inputs?: Record<string, string>) => Promise<{ instructions: string }>;
+		};
+
+		await autoMethod.authorize();
+
+		const logged = logSpy.mock.calls.map((call) => String(call[0])).join("\n");
+		expect(logged).toContain("Deleted us***@example.com");
+		expect(logged).not.toContain("user@example.com");
+
+		logSpy.mockRestore();
+	});
+
+	it("masks the email in the interactive enable/disable confirmation when maskEmail is enabled", async () => {
+		const cliModule = await import("../lib/cli.js");
+		const configModule = await import("../lib/config.js");
+
+		vi.mocked(configModule.getCodexTuiMaskEmail).mockReturnValue(true);
+
+		mockStorage.accounts = [
+			{ refreshToken: "r1", email: "user@example.com", accountId: "acc-1" },
+		];
+
+		vi.mocked(cliModule.promptLoginMode)
+			.mockReset()
+			.mockResolvedValueOnce({ mode: "manage", toggleAccountIndex: 0 })
+			.mockResolvedValue({ mode: "cancel" });
+
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin = (await OpenAIOAuthPlugin({
+			client: mockClient,
+		} as never)) as unknown as PluginType;
+		const autoMethod = plugin.auth.methods[0] as unknown as {
+			authorize: (inputs?: Record<string, string>) => Promise<{ instructions: string }>;
+		};
+
+		await autoMethod.authorize();
+
+		const logged = logSpy.mock.calls.map((call) => String(call[0])).join("\n");
+		expect(logged).toContain("us***@example.com");
+		expect(logged).not.toContain("user@example.com");
+
+		logSpy.mockRestore();
+	});
+
 	it("keeps workspace-deactivated flagged entries out of verify-flagged restore", async () => {
 		const cliModule = await import("../lib/cli.js");
 		const storageModule = await import("../lib/storage.js");

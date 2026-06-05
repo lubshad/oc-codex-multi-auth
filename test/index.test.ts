@@ -177,6 +177,13 @@ vi.mock("../lib/rotation.js", () => ({
 	addJitter: (ms: number) => ms,
 }));
 
+// The interactive account picker (`promptAccountIndexSelection`) and setup
+// wizard dynamically import this; mocking it lets us capture the menu items
+// (account labels) without a real TTY. Only active when a test stubs isTTY.
+vi.mock("../lib/ui/select.js", () => ({
+	select: vi.fn(async () => null),
+}));
+
 vi.mock("../lib/prompts/codex.js", () => ({
 	getModelFamily: (model: string) => {
 		if (model.includes("codex-max")) return "codex-max";
@@ -2284,6 +2291,217 @@ describe("OpenAIOAuthPlugin", () => {
 				backupMode: "required",
 			});
 			expect(observedSnapshots).toEqual(["s1", "s2"]);
+		});
+	});
+
+	// Regression suite for #163: when `maskEmail` is enabled, no human-facing
+	// account-display surface may render a raw email. These drive the REAL
+	// plugin tools (and thus the real `formatCommandAccountLabel` closure), so a
+	// regression that drops `{ maskEmail }` at any call site fails here.
+	describe("issue #163: email masking across all display surfaces", () => {
+		const RAW_EMAIL = "alice.example@example.com";
+		const MASKED_EMAIL = "al***@example.com";
+
+		const enableMasking = async () => {
+			const configModule = await import("../lib/config.js");
+			vi.mocked(configModule.getCodexTuiMaskEmail).mockReturnValue(true);
+		};
+		const disableMasking = async () => {
+			const configModule = await import("../lib/config.js");
+			vi.mocked(configModule.getCodexTuiMaskEmail).mockReturnValue(false);
+		};
+
+		const seedSingleAccount = () => {
+			mockStorage.accounts = [
+				{ refreshToken: "r1", email: RAW_EMAIL, accountId: "acc-1" },
+			];
+		};
+
+		// Each entry: a label and a thunk that returns the tool's rendered TEXT
+		// output for a single seeded account. Index-bearing tools target index 1.
+		const textSurfaces: Array<{
+			name: string;
+			run: () => Promise<string>;
+		}> = [
+			{
+				name: "codex-list",
+				run: async () =>
+					(await plugin.tool["codex-list"].execute()) as string,
+			},
+			{
+				name: "codex-status",
+				run: async () =>
+					(await plugin.tool["codex-status"].execute()) as string,
+			},
+			{
+				name: "codex-health",
+				run: async () =>
+					(await plugin.tool["codex-health"].execute()) as string,
+			},
+			{
+				name: "codex-switch",
+				run: async () =>
+					(await plugin.tool["codex-switch"].execute({ index: 1 })) as string,
+			},
+			{
+				name: "codex-label",
+				run: async () =>
+					(await plugin.tool["codex-label"].execute({
+						index: 1,
+						label: "Work",
+					})) as string,
+			},
+			{
+				name: "codex-tag",
+				run: async () =>
+					(await plugin.tool["codex-tag"].execute({
+						index: 1,
+						tags: "work",
+					})) as string,
+			},
+			{
+				name: "codex-note",
+				run: async () =>
+					(await plugin.tool["codex-note"].execute({
+						index: 1,
+						note: "primary",
+					})) as string,
+			},
+			{
+				name: "codex-remove",
+				run: async () =>
+					(await plugin.tool["codex-remove"].execute({
+						index: 1,
+						confirm: true,
+					})) as string,
+			},
+		];
+
+		// PLACEHOLDER_163_TESTS
+		for (const surface of textSurfaces) {
+			it(`${surface.name}: never renders the raw email when maskEmail is enabled`, async () => {
+				await enableMasking();
+				seedSingleAccount();
+
+				const output = await surface.run();
+
+				expect(output).toContain(MASKED_EMAIL);
+				expect(output).not.toContain(RAW_EMAIL);
+			});
+
+			it(`${surface.name}: renders the raw email when maskEmail is disabled (backward compatible)`, async () => {
+				await disableMasking();
+				seedSingleAccount();
+
+				const output = await surface.run();
+
+				expect(output).toContain(RAW_EMAIL);
+				expect(output).not.toContain(MASKED_EMAIL);
+			});
+		}
+
+		it("codex-list: masks every email when multiple accounts are listed", async () => {
+			await enableMasking();
+			mockStorage.accounts = [
+				{ refreshToken: "r1", email: "alice@example.com", accountId: "acc-1" },
+				{ refreshToken: "r2", email: "bob@other.org", accountId: "acc-2" },
+			];
+
+			const output = (await plugin.tool["codex-list"].execute()) as string;
+
+			expect(output).toContain("al***@example.com");
+			expect(output).toContain("bo***@other.org");
+			expect(output).not.toContain("alice@example.com");
+			expect(output).not.toContain("bob@other.org");
+		});
+
+		it("codex-remove: masks the email in the duplicate-entries hint when maskEmail is enabled", async () => {
+			await enableMasking();
+			// Two entries share the same email so the post-remove duplicate hint fires.
+			mockStorage.accounts = [
+				{ refreshToken: "r1", email: RAW_EMAIL, accountId: "acc-1" },
+				{ refreshToken: "r2", email: RAW_EMAIL, accountId: "acc-2" },
+			];
+
+			const output = (await plugin.tool["codex-remove"].execute({
+				index: 1,
+				confirm: true,
+			})) as string;
+
+			expect(output).toContain("Other entries for");
+			expect(output).toContain(MASKED_EMAIL);
+			expect(output).not.toContain(RAW_EMAIL);
+		});
+
+		it("codex-remove: shows the raw email in the duplicate-entries hint when maskEmail is disabled", async () => {
+			await disableMasking();
+			mockStorage.accounts = [
+				{ refreshToken: "r1", email: RAW_EMAIL, accountId: "acc-1" },
+				{ refreshToken: "r2", email: RAW_EMAIL, accountId: "acc-2" },
+			];
+
+			const output = (await plugin.tool["codex-remove"].execute({
+				index: 1,
+				confirm: true,
+			})) as string;
+
+			expect(output).toContain(`Other entries for ${RAW_EMAIL} remain`);
+		});
+
+		it("codex-list --includeSensitive: still emits the raw email in opt-in JSON even when masking is enabled", async () => {
+			await enableMasking();
+			seedSingleAccount();
+
+			const result = parseJsonOutput<{
+				accounts: Array<{ label: string; email: string | null }>;
+			}>(
+				(await plugin.tool["codex-list"].execute({
+					format: "json",
+					includeSensitive: true,
+				})) as string,
+			);
+
+			// The privacy boundary: --includeSensitive is the one opt-in surface
+			// where raw identity is intentionally preserved for tooling.
+			expect(result.accounts[0]?.email).toBe(RAW_EMAIL);
+			expect(result.accounts[0]?.label).toContain(RAW_EMAIL);
+		});
+
+		it("interactive account picker: masks emails in the selection menu when maskEmail is enabled", async () => {
+			await enableMasking();
+			mockStorage.accounts = [
+				{ refreshToken: "r1", email: RAW_EMAIL, accountId: "acc-1" },
+				{ refreshToken: "r2", email: "bob@other.org", accountId: "acc-2" },
+			];
+
+			const { select } = await import("../lib/ui/select.js");
+			vi.mocked(select).mockResolvedValueOnce(null);
+
+			// promptAccountIndexSelection only runs when an interactive TTY is
+			// available; stub both streams for the duration of this test.
+			const stdinDesc = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
+			const stdoutDesc = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+			Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
+			Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
+
+			try {
+				// No index => falls through to the interactive picker.
+				await plugin.tool["codex-switch"].execute({});
+
+				expect(vi.mocked(select)).toHaveBeenCalled();
+				const items = vi.mocked(select).mock.calls[0]?.[0] as Array<{
+					label: string;
+				}>;
+				const labels = items.map((item) => item.label).join("\n");
+
+				expect(labels).toContain("al***@example.com");
+				expect(labels).toContain("bo***@other.org");
+				expect(labels).not.toContain(RAW_EMAIL);
+				expect(labels).not.toContain("bob@other.org");
+			} finally {
+				if (stdinDesc) Object.defineProperty(process.stdin, "isTTY", stdinDesc);
+				if (stdoutDesc) Object.defineProperty(process.stdout, "isTTY", stdoutDesc);
+			}
 		});
 	});
 });

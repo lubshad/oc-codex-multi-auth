@@ -125,6 +125,7 @@ import {
 	getStoragePath,
 	loadAccounts,
 	saveAccounts,
+	withAccountStorageTransaction,
 	clearAccounts,
 	setStoragePath,
 	loadFlaggedAccounts,
@@ -757,15 +758,33 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                 if (accountsToHydrate.length === 0) return storage;
 
                 let changed = false;
+                // Record hydrated field updates keyed by the account's ORIGINAL
+                // refresh token (captured before the network call) so we can
+                // re-apply them onto a freshly-loaded snapshot inside a storage
+                // transaction — avoiding a lost-update race with concurrent saves.
+                const hydrationUpdates = new Map<
+                        string,
+                        {
+                                accountId?: string;
+                                accountIdSource?: "token";
+                                email?: string;
+                                accessToken?: string;
+                                expiresAt?: number;
+                                oauthScope?: string;
+                                refreshToken?: string;
+                        }
+                >();
                 // process in chunks of 3 to avoid auth0 rate limits (429) on startup
                 const chunkSize = 3;
                 for (let i = 0; i < accountsToHydrate.length; i += chunkSize) {
                         const chunk = accountsToHydrate.slice(i, i + chunkSize);
                         await Promise.all(
                                 chunk.map(async (account) => {
+                                const originalRefreshToken = account.refreshToken;
                                 try {
                                         const refreshed = await queuedRefresh(account.refreshToken);
                                         if (refreshed.type !== "success") return;
+                                        const update = hydrationUpdates.get(originalRefreshToken) ?? {};
                                         const id = extractAccountId(refreshed.access);
                                         const email = sanitizeEmail(extractAccountEmail(refreshed.access, refreshed.idToken));
                                         if (
@@ -775,27 +794,37 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                                         ) {
                                                 account.accountId = id;
                                                 account.accountIdSource = "token";
+                                                update.accountId = id;
+                                                update.accountIdSource = "token";
                                                 changed = true;
                                         }
                                         if (email && email !== account.email) {
                                                 account.email = email;
+                                                update.email = email;
                                                 changed = true;
                                         }
 					if (refreshed.access && refreshed.access !== account.accessToken) {
 						account.accessToken = refreshed.access;
+						update.accessToken = refreshed.access;
 						changed = true;
 					}
 					if (typeof refreshed.expires === "number" && refreshed.expires !== account.expiresAt) {
 						account.expiresAt = refreshed.expires;
+						update.expiresAt = refreshed.expires;
 						changed = true;
 					}
 					if (refreshed.scope && refreshed.scope !== account.oauthScope) {
 						account.oauthScope = refreshed.scope;
+						update.oauthScope = refreshed.scope;
 						changed = true;
 					}
                                         if (refreshed.refresh && refreshed.refresh !== account.refreshToken) {
                                                 account.refreshToken = refreshed.refresh;
+                                                update.refreshToken = refreshed.refresh;
                                                 changed = true;
+                                        }
+                                        if (Object.keys(update).length > 0) {
+                                                hydrationUpdates.set(originalRefreshToken, update);
                                         }
 				} catch {
 					logWarn(`[${PLUGIN_NAME}] Failed to hydrate email for account`);
@@ -805,8 +834,28 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
                 }
 
                 if (changed) {
+                        // Persist under the storage lock against a fresh snapshot so a
+                        // concurrent save during the (potentially multi-second) hydration
+                        // network loop is not clobbered. Match accounts by their original
+                        // refresh token.
+                        await withAccountStorageTransaction(async (current, persist) => {
+                                if (!current) return;
+                                for (const acc of current.accounts) {
+                                        const update = hydrationUpdates.get(acc.refreshToken);
+                                        if (!update) continue;
+                                        if (update.accountId !== undefined) acc.accountId = update.accountId;
+                                        if (update.accountIdSource !== undefined) acc.accountIdSource = update.accountIdSource;
+                                        if (update.email !== undefined) acc.email = update.email;
+                                        if (update.accessToken !== undefined) acc.accessToken = update.accessToken;
+                                        if (update.expiresAt !== undefined) acc.expiresAt = update.expiresAt;
+                                        if (update.oauthScope !== undefined) acc.oauthScope = update.oauthScope;
+                                        // Apply the rotated refresh token LAST so the map key
+                                        // (original token) still matches above.
+                                        if (update.refreshToken !== undefined) acc.refreshToken = update.refreshToken;
+                                }
+                                await persist(current);
+                        });
                         storage.accounts = accountsCopy;
-                        await saveAccounts(storage);
                 }
                 return storage;
         };
@@ -2588,9 +2637,33 @@ while (attempted.size < Math.max(1, accountCount)) {
 
 					resetRateLimitBackoff(account.index, quotaKey);
 					runtimeMetrics.cumulativeLatencyMs += fetchLatencyMs;
-					const successResponse = await handleSuccessResponse(response, isStreaming, {
-						streamStallTimeoutMs,
-					});
+					let successResponse: Response;
+					try {
+						successResponse = await handleSuccessResponse(response, isStreaming, {
+							streamStallTimeoutMs,
+						});
+					} catch (streamError) {
+						// A stream stall or SSE-parse failure happened AFTER a token was
+						// consumed (line ~token-consume above). Without this catch the
+						// exception escaped both loops, leaking the consumed token and
+						// skipping account rotation. Refund, mark the breaker/account
+						// failed, and rotate to the next account.
+						accountManager.refundToken(account, modelFamily, model);
+						accountManager.recordFailure(account, modelFamily, model);
+						circuitBreaker.recordFailure();
+						account.lastSwitchReason = "rotation";
+						runtimeMetrics.failedRequests++;
+						runtimeMetrics.accountRotations++;
+						runtimeMetrics.lastError =
+							streamError instanceof Error ? streamError.message : String(streamError);
+						runtimeMetrics.lastErrorCategory = "stream";
+						logWarn(
+							`Stream/response handling failed for account ${account.index + 1}: ${runtimeMetrics.lastError}. Rotating.`,
+						);
+						// Account for the server-class retry budget, then rotate.
+						consumeRetryBudget("server", "Stream/response handling failure");
+						break;
+					}
 
 					if (!successResponse.ok) {
 						runtimeMetrics.failedRequests++;
@@ -3288,7 +3361,46 @@ while (attempted.size < Math.max(1, accountCount)) {
 								}
 
 								if (storageChanged) {
-									await saveAccounts(workingStorage);
+									// Persist under the storage lock against a fresh snapshot so
+									// concurrent saves during the (long) health-check network loop
+									// are not clobbered. Re-apply this run's per-account quota/state
+									// updates by workspace identity and re-apply removals.
+									const workingByIdentity = new Map(
+										workingStorage.accounts.map((account) => [
+											getWorkspaceIdentityKey(account),
+											account,
+										]),
+									);
+									await withAccountStorageTransaction(async (current, persist) => {
+										if (!current) {
+											// No on-disk state to merge into; fall back to the working copy.
+											await persist(workingStorage);
+											return;
+										}
+										const merged: typeof current.accounts = [];
+										for (const acc of current.accounts) {
+											const identity = getWorkspaceIdentityKey(acc);
+											if (removeFromActive.has(identity)) continue;
+											const updated = workingByIdentity.get(identity);
+											if (updated) {
+												// Carry forward ONLY the token/identity fields this health
+												// check refreshes. Labels, tags, notes, and rate-limit /
+												// cooldown state stay as the fresh snapshot has them so a
+												// concurrent edit during the network loop is not reverted.
+												acc.accountId = updated.accountId;
+												acc.accountIdSource = updated.accountIdSource;
+												acc.refreshToken = updated.refreshToken;
+												acc.accessToken = updated.accessToken;
+												acc.expiresAt = updated.expiresAt;
+												acc.oauthScope = updated.oauthScope;
+												acc.email = updated.email;
+											}
+											merged.push(acc);
+										}
+										current.accounts = merged;
+										clampActiveIndices(current);
+										await persist(current);
+									});
 									invalidateAccountManagerCache();
 								}
 								if (flaggedChanged) {

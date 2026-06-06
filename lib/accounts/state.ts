@@ -430,6 +430,18 @@ export class AccountState {
 		}
 		if (previousRefreshToken !== account.refreshToken) {
 			this.authFailuresByRefreshToken.delete(previousRefreshToken);
+			// A single OAuth login produces sibling accounts (distinct orgs) that
+			// SHARE one refresh token. OpenAI rotates the refresh token on refresh,
+			// so the siblings' stored token is now stale; their next refresh would
+			// fail and eventually remove still-valid workspaces. Propagate the new
+			// refresh token to those siblings. Org-specific fields (access /
+			// accountId / email) are left untouched — each sibling re-derives its
+			// own access token on its next use.
+			this.propagateRotatedRefreshTokenToSiblings(
+				account,
+				previousRefreshToken,
+				auth.refresh,
+			);
 		}
 		const tokenAccountId = extractAccountId(auth.access);
 		if (
@@ -440,6 +452,29 @@ export class AccountState {
 			account.accountIdSource = "token";
 		}
 		account.email = sanitizeEmail(extractAccountEmail(auth.access)) ?? account.email;
+	}
+
+	/**
+	 * After a refresh rotates the refresh token on `account`, update every OTHER
+	 * account that still holds the pre-rotation token so the shared credential
+	 * stays consistent across org-variant siblings.
+	 */
+	private propagateRotatedRefreshTokenToSiblings(
+		account: ManagedAccount,
+		previousRefreshToken: string,
+		newRefreshToken: string,
+	): void {
+		if (!previousRefreshToken || previousRefreshToken === newRefreshToken) return;
+		for (const sibling of this.accounts) {
+			if (sibling === account) continue;
+			if (sibling.refreshToken === previousRefreshToken) {
+				sibling.refreshToken = newRefreshToken;
+				// The expired access token on the sibling forces a fresh refresh
+				// (with the now-valid token) the next time it is selected.
+				sibling.expires = 0;
+			}
+		}
+		this.authFailuresByRefreshToken.delete(previousRefreshToken);
 	}
 
 	toAuthDetails(account: ManagedAccount): OAuthAuthDetails {

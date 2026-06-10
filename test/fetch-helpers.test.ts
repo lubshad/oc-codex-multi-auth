@@ -1272,9 +1272,9 @@ describe('Fetch Helpers Module', () => {
 				);
 
 				expect(result).toBeDefined();
-				expect(result?.body.model).toBe('gpt-5-codex');
-				expect(result?.body.instructions).toContain('backend as gpt-5-codex');
-				expect(JSON.stringify(result?.body.input?.[0])).toContain('`gpt-5-codex`');
+				expect(result?.body.model).toBe('gpt-5.3-codex');
+				expect(result?.body.instructions).toContain('backend as gpt-5.3-codex');
+				expect(JSON.stringify(result?.body.input?.[0])).toContain('`gpt-5.3-codex`');
 				expect(result?.body.tools).toEqual([{ name: 'apply_patch' }]);
 				expect(getInstructionsSpy).not.toHaveBeenCalled();
 			});
@@ -1367,7 +1367,7 @@ describe('Fetch Helpers Module', () => {
 				);
 
 				expect(result).toBeDefined();
-				expect(result?.body.model).toBe('gpt-5-codex');
+				expect(result?.body.model).toBe('gpt-5.3-codex');
 				expect(typeof result?.updatedInit.body).toBe('string');
 			});
 

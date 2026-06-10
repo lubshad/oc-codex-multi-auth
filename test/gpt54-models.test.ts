@@ -406,7 +406,7 @@ describe("GPT-5.4 Model Support", () => {
 
 		it("should coexist with gpt-5.3-codex model", () => {
 			expect(normalizeModel("gpt-5.4")).toBe("gpt-5.4");
-			expect(normalizeModel("gpt-5.3-codex")).toBe("gpt-5-codex");
+			expect(normalizeModel("gpt-5.3-codex")).toBe("gpt-5.3-codex");
 			expect(getModelFamily("gpt-5.4")).toBe("gpt-5.4");
 			expect(getModelFamily("gpt-5.3-codex")).toBe("gpt-5-codex");
 		});

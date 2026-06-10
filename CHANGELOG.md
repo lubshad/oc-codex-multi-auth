@@ -10,6 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - (placeholder for next release)
 
+## [6.3.2] - 2026-06-10
+
+### Fixed
+- `gpt-5.3-codex-spark`, `gpt-5.3-codex`, and `gpt-5.2-codex` are no longer collapsed to `gpt-5-codex` before sending requests. Accounts where only the versioned model is available (not the base `gpt-5-codex`) no longer receive `model_not_supported_with_chatgpt_account` errors. (#170, fixes #169)
+- Added `gpt-5.4-fast` and `gpt-5.4-mini-fast` as explicit model map entries so OpenCode fast-variant selectors resolve correctly.
+- Reasoning effort `-none` suffix is intentionally absent for the three Codex families above; `getReasoningConfig()` coerces any `none` request to `low` for these models as before.
+
 ## [6.1.8] - 2026-04-29
 
 ### Fixed

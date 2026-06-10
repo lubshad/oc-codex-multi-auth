@@ -42,22 +42,24 @@ export const MODEL_MAP: Record<string, string> = {
 	"gpt-5-codex-xhigh": "gpt-5-codex",
 
 	// ============================================================================
-	// GPT-5.3 Codex Spark Models (legacy aliases)
+	// GPT-5.3 Codex Spark Models (distinct backend model; does NOT support "none")
 	// ============================================================================
-	"gpt-5.3-codex-spark": "gpt-5-codex",
-	"gpt-5.3-codex-spark-low": "gpt-5-codex",
-	"gpt-5.3-codex-spark-medium": "gpt-5-codex",
-	"gpt-5.3-codex-spark-high": "gpt-5-codex",
-	"gpt-5.3-codex-spark-xhigh": "gpt-5-codex",
+	"gpt-5.3-codex-spark": "gpt-5.3-codex-spark",
+	"gpt-5.3-codex-spark-low": "gpt-5.3-codex-spark",
+	"gpt-5.3-codex-spark-medium": "gpt-5.3-codex-spark",
+	"gpt-5.3-codex-spark-high": "gpt-5.3-codex-spark",
+	"gpt-5.3-codex-spark-xhigh": "gpt-5.3-codex-spark",
+	// "-none" is intentionally absent: gpt-5.3-codex-spark rejects reasoning effort "none"
 
 	// ============================================================================
-	// GPT-5.3 Codex Models (legacy aliases)
+	// GPT-5.3 Codex Models (distinct backend model; does NOT support "none")
 	// ============================================================================
-	"gpt-5.3-codex": "gpt-5-codex",
-	"gpt-5.3-codex-low": "gpt-5-codex",
-	"gpt-5.3-codex-medium": "gpt-5-codex",
-	"gpt-5.3-codex-high": "gpt-5-codex",
-	"gpt-5.3-codex-xhigh": "gpt-5-codex",
+	"gpt-5.3-codex": "gpt-5.3-codex",
+	"gpt-5.3-codex-low": "gpt-5.3-codex",
+	"gpt-5.3-codex-medium": "gpt-5.3-codex",
+	"gpt-5.3-codex-high": "gpt-5.3-codex",
+	"gpt-5.3-codex-xhigh": "gpt-5.3-codex",
+	// "-none" is intentionally absent: gpt-5.3-codex rejects reasoning effort "none"
 
 	// ============================================================================
 	// GPT-5.1 Codex Models (legacy aliases)
@@ -107,6 +109,7 @@ export const MODEL_MAP: Record<string, string> = {
 	"gpt-5.4-medium": "gpt-5.4",
 	"gpt-5.4-high": "gpt-5.4",
 	"gpt-5.4-xhigh": "gpt-5.4",
+	"gpt-5.4-fast": "gpt-5.4",
 	...expandDatedAliases(`gpt-5.4-${GPT_54_SNAPSHOT_DATE}`, "gpt-5.4"),
 
 	// ============================================================================
@@ -127,6 +130,7 @@ export const MODEL_MAP: Record<string, string> = {
 	"gpt-5.4-mini-medium": "gpt-5.4-mini",
 	"gpt-5.4-mini-high": "gpt-5.4-mini",
 	"gpt-5.4-mini-xhigh": "gpt-5.4-mini",
+	"gpt-5.4-mini-fast": "gpt-5.4-mini",
 	...expandDatedAliases(`gpt-5.4-mini-${GPT_54_SNAPSHOT_DATE}`, "gpt-5.4-mini"),
 
 	// ============================================================================
@@ -151,13 +155,14 @@ export const MODEL_MAP: Record<string, string> = {
 	"gpt-5.2-xhigh": "gpt-5.2",
 
 	// ============================================================================
-	// GPT-5.2 Codex Models (legacy aliases)
+	// GPT-5.2 Codex Models (distinct backend model; does NOT support "none")
 	// ============================================================================
-	"gpt-5.2-codex": "gpt-5-codex",
-	"gpt-5.2-codex-low": "gpt-5-codex",
-	"gpt-5.2-codex-medium": "gpt-5-codex",
-	"gpt-5.2-codex-high": "gpt-5-codex",
-	"gpt-5.2-codex-xhigh": "gpt-5-codex",
+	"gpt-5.2-codex": "gpt-5.2-codex",
+	"gpt-5.2-codex-low": "gpt-5.2-codex",
+	"gpt-5.2-codex-medium": "gpt-5.2-codex",
+	"gpt-5.2-codex-high": "gpt-5.2-codex",
+	"gpt-5.2-codex-xhigh": "gpt-5.2-codex",
+	// "-none" is intentionally absent: gpt-5.2-codex rejects reasoning effort "none"
 
 	// ============================================================================
 	// GPT-5.1 Codex Mini Models

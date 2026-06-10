@@ -123,49 +123,58 @@ describe("Model Map Module", () => {
       expect(MODEL_MAP["gpt-5.4-mini-2026-03-05-high"]).toBe("gpt-5.4-mini");
     });
 
-	    it("contains GPT-5.2 codex models", () => {
-	      expect(MODEL_MAP["gpt-5.2-codex"]).toBe("gpt-5-codex");
-	      expect(MODEL_MAP["gpt-5.2-codex-low"]).toBe("gpt-5-codex");
-	      expect(MODEL_MAP["gpt-5.2-codex-medium"]).toBe("gpt-5-codex");
-	      expect(MODEL_MAP["gpt-5.2-codex-high"]).toBe("gpt-5-codex");
-	      expect(MODEL_MAP["gpt-5.2-codex-xhigh"]).toBe("gpt-5-codex");
+	    it("contains GPT-5.2 codex models (distinct backend model, not collapsed to gpt-5-codex)", () => {
+	      expect(MODEL_MAP["gpt-5.2-codex"]).toBe("gpt-5.2-codex");
+	      expect(MODEL_MAP["gpt-5.2-codex-low"]).toBe("gpt-5.2-codex");
+	      expect(MODEL_MAP["gpt-5.2-codex-medium"]).toBe("gpt-5.2-codex");
+	      expect(MODEL_MAP["gpt-5.2-codex-high"]).toBe("gpt-5.2-codex");
+	      expect(MODEL_MAP["gpt-5.2-codex-xhigh"]).toBe("gpt-5.2-codex");
+	      // "-none" is intentionally absent: this model rejects effort "none"
+	      expect(MODEL_MAP["gpt-5.2-codex-none"]).toBeUndefined();
 	    });
 
-	    it("contains GPT-5.3 codex models", () => {
-	      expect(MODEL_MAP["gpt-5.3-codex"]).toBe("gpt-5-codex");
-	      expect(MODEL_MAP["gpt-5.3-codex-low"]).toBe("gpt-5-codex");
-	      expect(MODEL_MAP["gpt-5.3-codex-medium"]).toBe("gpt-5-codex");
-	      expect(MODEL_MAP["gpt-5.3-codex-high"]).toBe("gpt-5-codex");
-	      expect(MODEL_MAP["gpt-5.3-codex-xhigh"]).toBe("gpt-5-codex");
+	    it("contains GPT-5.3 codex models (distinct backend model, not collapsed to gpt-5-codex)", () => {
+	      expect(MODEL_MAP["gpt-5.3-codex"]).toBe("gpt-5.3-codex");
+	      expect(MODEL_MAP["gpt-5.3-codex-low"]).toBe("gpt-5.3-codex");
+	      expect(MODEL_MAP["gpt-5.3-codex-medium"]).toBe("gpt-5.3-codex");
+	      expect(MODEL_MAP["gpt-5.3-codex-high"]).toBe("gpt-5.3-codex");
+	      expect(MODEL_MAP["gpt-5.3-codex-xhigh"]).toBe("gpt-5.3-codex");
+	      // "-none" is intentionally absent: this model rejects effort "none"
+	      expect(MODEL_MAP["gpt-5.3-codex-none"]).toBeUndefined();
 	    });
 
-    it("contains GPT-5.3 codex spark models", () => {
-      expect(MODEL_MAP["gpt-5.3-codex-spark"]).toBe("gpt-5-codex");
-	      expect(MODEL_MAP["gpt-5.3-codex-spark-low"]).toBe("gpt-5-codex");
-	      expect(MODEL_MAP["gpt-5.3-codex-spark-medium"]).toBe("gpt-5-codex");
-	      expect(MODEL_MAP["gpt-5.3-codex-spark-high"]).toBe("gpt-5-codex");
-      expect(MODEL_MAP["gpt-5.3-codex-spark-xhigh"]).toBe("gpt-5-codex");
+    it("contains GPT-5.3 codex spark models (distinct backend model, not collapsed to gpt-5-codex)", () => {
+      expect(MODEL_MAP["gpt-5.3-codex-spark"]).toBe("gpt-5.3-codex-spark");
+	      expect(MODEL_MAP["gpt-5.3-codex-spark-low"]).toBe("gpt-5.3-codex-spark");
+	      expect(MODEL_MAP["gpt-5.3-codex-spark-medium"]).toBe("gpt-5.3-codex-spark");
+	      expect(MODEL_MAP["gpt-5.3-codex-spark-high"]).toBe("gpt-5.3-codex-spark");
+      expect(MODEL_MAP["gpt-5.3-codex-spark-xhigh"]).toBe("gpt-5.3-codex-spark");
+      // "-none" is intentionally absent: this model rejects effort "none"
+      expect(MODEL_MAP["gpt-5.3-codex-spark-none"]).toBeUndefined();
     });
 
-    it("keeps legacy Codex normalization aligned with canonical fallback", () => {
-      const normalizedCodex = getNormalizedModel("gpt-5.2-codex");
-      expect(normalizedCodex).toBe("gpt-5-codex");
-      expect(getNormalizedModel("gpt-5.3-codex-spark")).toBe("gpt-5-codex");
+    it("keeps Codex normalization aligned with canonical fallback chain", () => {
+      // Each versioned codex family now resolves to its own canonical ID
+      expect(getNormalizedModel("gpt-5.2-codex")).toBe("gpt-5.2-codex");
+      expect(getNormalizedModel("gpt-5.3-codex")).toBe("gpt-5.3-codex");
+      expect(getNormalizedModel("gpt-5.3-codex-spark")).toBe("gpt-5.3-codex-spark");
 
+      // Fallback chain: gpt-5.2-codex → gpt-5-codex → gpt-5.4 on unsupported error
+      const normalizedCodex = getNormalizedModel("gpt-5.2-codex")!;
       const fallback = resolveUnsupportedCodexFallbackModel({
         requestedModel: normalizedCodex,
         errorBody: {
           error: {
             code: "model_not_supported_with_chatgpt_account",
             message:
-              "The 'gpt-5-codex' model is not supported when using Codex with a ChatGPT account.",
+              "The 'gpt-5.2-codex' model is not supported when using Codex with a ChatGPT account.",
           },
         },
-        attemptedModels: [normalizedCodex ?? ""],
+        attemptedModels: [normalizedCodex],
         fallbackOnUnsupportedCodexModel: true,
         fallbackToGpt52OnUnsupportedGpt53: true,
       });
-      expect(fallback).toBe("gpt-5.4");
+      expect(fallback).toBe("gpt-5-codex");
 
       const secondStepFallback = resolveUnsupportedCodexFallbackModel({
         requestedModel: fallback,
@@ -173,14 +182,14 @@ describe("Model Map Module", () => {
           error: {
             code: "model_not_supported_with_chatgpt_account",
             message:
-              "The 'gpt-5.4' model is not supported when using Codex with a ChatGPT account.",
+              "The 'gpt-5-codex' model is not supported when using Codex with a ChatGPT account.",
           },
         },
-        attemptedModels: [normalizedCodex ?? "", fallback],
-        fallbackOnUnsupportedCodexModel: false,
+        attemptedModels: [normalizedCodex, fallback],
+        fallbackOnUnsupportedCodexModel: true,
         fallbackToGpt52OnUnsupportedGpt53: true,
       });
-      expect(secondStepFallback).toBe("gpt-5.4-mini");
+      expect(secondStepFallback).toBe("gpt-5.4");
     });
 
     it("contains GPT-5.1 codex-mini models", () => {
@@ -230,10 +239,12 @@ describe("Model Map Module", () => {
     it("returns normalized model for exact match", () => {
       expect(getNormalizedModel("gpt-5.1-codex")).toBe("gpt-5-codex");
       expect(getNormalizedModel("gpt-5.1-codex-low")).toBe("gpt-5-codex");
-      expect(getNormalizedModel("gpt-5.2-codex-high")).toBe("gpt-5-codex");
-      expect(getNormalizedModel("gpt-5.3-codex-high")).toBe("gpt-5-codex");
-      expect(getNormalizedModel("gpt-5.3-codex-spark-high")).toBe("gpt-5-codex");
+      expect(getNormalizedModel("gpt-5.2-codex-high")).toBe("gpt-5.2-codex");
+      expect(getNormalizedModel("gpt-5.3-codex-high")).toBe("gpt-5.3-codex");
+      expect(getNormalizedModel("gpt-5.3-codex-spark-high")).toBe("gpt-5.3-codex-spark");
       expect(getNormalizedModel("gpt-5.4-high")).toBe("gpt-5.4");
+      expect(getNormalizedModel("gpt-5.4-fast")).toBe("gpt-5.4");
+      expect(getNormalizedModel("gpt-5.4-mini-fast")).toBe("gpt-5.4-mini");
       expect(getNormalizedModel("gpt-5.4-pro-none")).toBeUndefined();
       expect(getNormalizedModel("gpt-5.4-pro-high")).toBe("gpt-5.4-pro");
       expect(getNormalizedModel("gpt-5.4-2026-03-05-medium")).toBe("gpt-5.4");
@@ -245,9 +256,9 @@ describe("Model Map Module", () => {
 
     it("handles case-insensitive lookup", () => {
       expect(getNormalizedModel("GPT-5.1-CODEX")).toBe("gpt-5-codex");
-      expect(getNormalizedModel("Gpt-5.2-Codex-High")).toBe("gpt-5-codex");
-      expect(getNormalizedModel("Gpt-5.3-Codex-High")).toBe("gpt-5-codex");
-      expect(getNormalizedModel("Gpt-5.3-Codex-Spark-High")).toBe("gpt-5-codex");
+      expect(getNormalizedModel("Gpt-5.2-Codex-High")).toBe("gpt-5.2-codex");
+      expect(getNormalizedModel("Gpt-5.3-Codex-High")).toBe("gpt-5.3-codex");
+      expect(getNormalizedModel("Gpt-5.3-Codex-Spark-High")).toBe("gpt-5.3-codex-spark");
       expect(getNormalizedModel("Gpt-5.4-High")).toBe("gpt-5.4");
       expect(getNormalizedModel("Gpt-5.4-Pro-High")).toBe("gpt-5.4-pro");
       expect(getNormalizedModel("Gpt-5.4-Mini-High")).toBe("gpt-5.4-mini");
@@ -297,7 +308,6 @@ describe("Model Map Module", () => {
       expect(isKnownModel("GPT-5.4-MINI-HIGH")).toBe(true);
       expect(isKnownModel("gpt-5.4-mini")).toBe(true);
     });
-
     it("returns false for unknown models", () => {
       expect(isKnownModel("gpt-6")).toBe(false);
       expect(isKnownModel("claude-3")).toBe(false);
@@ -333,6 +343,9 @@ describe("Model Map Module", () => {
         "gpt-5.1-codex-mini",
         "gpt-5.1",
         "gpt-5.2",
+        "gpt-5.2-codex",
+        "gpt-5.3-codex",
+        "gpt-5.3-codex-spark",
         "gpt-5.5",
         "gpt-5.4",
         "gpt-5.4-pro",

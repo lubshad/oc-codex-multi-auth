@@ -433,7 +433,7 @@ describe("Edge Cases and Boundary Conditions", () => {
 		it("should handle concurrent model normalization", () => {
 			const models = ["gpt-5.4", "gpt-5.3-codex", "gpt-5.2", "gpt-5-codex"];
 			const results = models.map(normalizeModel);
-			expect(results).toEqual(["gpt-5.4", "gpt-5-codex", "gpt-5.2", "gpt-5-codex"]);
+			expect(results).toEqual(["gpt-5.4", "gpt-5.3-codex", "gpt-5.2", "gpt-5-codex"]);
 		});
 
 		it("should be consistent across repeated calls", () => {

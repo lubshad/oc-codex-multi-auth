@@ -60,28 +60,29 @@ export function normalizeModel(model: string | undefined): string {
 	const normalized = modelId.toLowerCase();
 
 	// Priority order for pattern matching (most specific first):
-	// 1. GPT-5.3 Codex Spark (legacy alias -> canonical gpt-5-codex)
+	// 1. GPT-5.3 Codex Spark — distinct backend model, preserved as canonical ID
 	if (
 		normalized.includes("gpt-5.3-codex-spark") ||
 		normalized.includes("gpt 5.3 codex spark")
 	) {
-		return "gpt-5-codex";
+		return "gpt-5.3-codex-spark";
 	}
 
-	// 2. GPT-5.3 Codex (legacy alias -> canonical gpt-5-codex)
+	// 2. GPT-5.3 Codex — distinct backend model, preserved as canonical ID
+	// Must come after the spark check so "gpt-5.3-codex-spark*" isn't swallowed here.
 	if (
 		normalized.includes("gpt-5.3-codex") ||
 		normalized.includes("gpt 5.3 codex")
 	) {
-		return "gpt-5-codex";
+		return "gpt-5.3-codex";
 	}
 
-	// 3. GPT-5.2 Codex (legacy alias -> canonical gpt-5-codex)
+	// 3. GPT-5.2 Codex — distinct backend model, preserved as canonical ID
 	if (
 		normalized.includes("gpt-5.2-codex") ||
 		normalized.includes("gpt 5.2 codex")
 	) {
-		return "gpt-5-codex";
+		return "gpt-5.2-codex";
 	}
 
 	// 4. GPT-5.5 (general purpose release)

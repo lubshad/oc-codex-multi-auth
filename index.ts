@@ -3178,6 +3178,17 @@ while (attempted.size < Math.max(1, accountCount)) {
 											if (isDeactivatedWorkspaceError(errorBody, response.status)) {
 												throw createDeactivatedWorkspaceError();
 											}
+											// A 401 here proves the token is invalid even when the body
+											// carries only a generic "Unauthorized" string. The status is
+											// dropped once we throw a plain Error, so normalize to the
+											// canonical message the catch below matches — otherwise a
+											// non-specific 401 would leave a dead routing slot unflagged
+											// for codex-doctor --fix (issue #171).
+											if (isInvalidatedAuthTokenError(errorBody, response.status)) {
+												throw new Error(
+													"Your authentication token has been invalidated. Please try signing in again.",
+												);
+											}
 											throw new Error(message);
 										}
 

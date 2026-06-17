@@ -1443,6 +1443,14 @@ describe('Fetch Helpers Module', () => {
 			).toBe(true);
 		});
 
+		it('does not treat generic permission/wrong-key codes as invalidated tokens (status-less)', () => {
+			// `unauthorized` (permission-denied) and `invalid_api_key` (wrong key)
+			// are excluded so the status-less fallback cannot cool down a healthy
+			// account on a non-token error.
+			expect(isInvalidatedAuthTokenError({ error: { code: 'unauthorized' } })).toBe(false);
+			expect(isInvalidatedAuthTokenError({ error: { code: 'invalid_api_key' } })).toBe(false);
+		});
+
 		it('does not match rate limits, entitlement gates, or server errors', () => {
 			expect(isInvalidatedAuthTokenError({ error: { code: 'rate_limit_exceeded' } }, 429)).toBe(false);
 			expect(

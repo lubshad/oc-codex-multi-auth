@@ -419,12 +419,17 @@ function getStructuredErrorMessage(errorBody: unknown): string | undefined {
 }
 
 /**
- * Auth error codes the Codex/OpenAI backend uses for a rejected or revoked
- * access token. These are distinct from rate limits (429) and entitlement gates
- * (403/`model_not_supported_*`), which have their own rotation/fallback paths.
+ * Auth error codes the Codex/OpenAI backend uses for a specifically invalidated
+ * or revoked OAuth token. Kept deliberately narrow: generic codes like
+ * `unauthorized` (permission-denied) or `invalid_api_key` (wrong key) are
+ * excluded so the status-less code/message fallback cannot cool down a healthy
+ * account on a non-token error. HTTP 401 remains the primary signal; these are
+ * only a fallback for paths that carry a structured code but no status. Distinct
+ * from rate limits (429) and entitlement gates (403/`model_not_supported_*`),
+ * which have their own rotation/fallback paths.
  */
 const INVALIDATED_AUTH_TOKEN_CODE_PATTERN =
-	/^(?:invalid_token|invalid_grant|invalid_api_key|unauthorized|token_expired|token_revoked)$/i;
+	/^(?:invalid_token|invalid_grant|token_expired|token_revoked)$/i;
 
 /**
  * Detects the "authentication token invalidated" failure on the *request* path

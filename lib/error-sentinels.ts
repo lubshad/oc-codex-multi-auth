@@ -30,9 +30,16 @@ export const USAGE_REQUEST_TIMEOUT_MESSAGE = "Usage request timed out";
  *
  * The pattern tolerates the "(run `opencode auth login` if this persists)" hint
  * the plugin appends to 401 bodies and minor wording variants.
+ *
+ * The second branch deliberately requires an explicit token/credential keyword
+ * before "sign in again": this matcher is also used on the status-less
+ * codex-health/codex-doctor probe path, where a bare "please sign in again"
+ * could otherwise come from a generic session-expiry, workspace-lock, or
+ * license error (e.g. a 402/403 body) and wrongly flag a healthy account as
+ * token-invalid.
  */
 export const INVALIDATED_AUTH_TOKEN_MESSAGE_PATTERN =
-	/(?:authentication )?token has been invalidated|please (?:try )?sign(?:ing)?[\s-]*in again/i;
+	/token has been invalidated|(?:authentication|auth|access|session|login)\s+token\b[^.]*\bsign(?:ing)?[\s-]*in again/i;
 
 export function isInvalidatedAuthTokenMessage(message: string | undefined): boolean {
 	if (!message) return false;

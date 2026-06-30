@@ -17,7 +17,7 @@ import { describe, it, expect, afterEach, beforeEach } from "vitest";
 import { AccountManager } from "../../lib/accounts.js";
 import type { AccountStorageV3 } from "../../lib/storage.js";
 import type { ModelFamily } from "../../lib/prompts/codex.js";
-import { resetTrackers } from "../../lib/rotation.js";
+import { resetTrackers, getTokenTracker, DEFAULT_TOKEN_BUCKET_CONFIG } from "../../lib/rotation.js";
 import type { RotationStrategy } from "../../lib/config.js";
 
 const FAMILY: ModelFamily = "codex";
@@ -225,5 +225,85 @@ describe("chaos/rotation-strategy — adversarial selection (issue #183)", () =>
 		liveManagers.push(restarted);
 		// After restart sticky resumes on the persisted pin (index 1).
 		expect(restarted.getAccountForStrategy("sticky", FAMILY, MODEL)?.index).toBe(1);
+	});
+});
+
+describe("chaos/rotation-strategy — local token-bucket awareness (no cross-process leak)", () => {
+	beforeEach(() => {
+		resetTrackers();
+	});
+	afterEach(() => {
+		while (liveManagers.length > 0) {
+			liveManagers.pop()?.disposeShutdownHandler();
+		}
+		resetTrackers();
+	});
+
+	const drainBucket = (manager: AccountManager, index: number) => {
+		// Consume the whole local bucket for this account+family so hasToken→false.
+		for (let i = 0; i < DEFAULT_TOKEN_BUCKET_CONFIG.maxTokens + 1; i++) {
+			const acct = manager.getAccountsSnapshot()[index]!;
+			manager.consumeToken(acct, FAMILY, MODEL);
+		}
+	};
+
+	it("selection skips a locally token-depleted account WITHOUT persisting any rate-limit", () => {
+		const manager = makeManager(3);
+		drainBucket(manager, 0);
+		// Sticky must NOT return account 0 (depleted); it rotates to 1.
+		expect(pick(manager, "sticky")).toBe(1);
+		// Critically: NO synthetic rate-limit window was written to the account
+		// (that field is persisted + shared cross-process). The leak regression.
+		const acct0 = manager.getAccountsSnapshot()[0]!;
+		expect(Object.keys(acct0.rateLimitResetTimes)).toEqual([]);
+		expect(acct0.coolingDownUntil).toBeUndefined();
+	});
+
+	it("a fresh process (new manager from same storage) does NOT see the depleted account as rate-limited", () => {
+		const manager = makeManager(2);
+		drainBucket(manager, 0);
+		// Snapshot the on-disk-equivalent storage shape from the live accounts.
+		const snapshot = manager.getAccountsSnapshot();
+		expect(Object.keys(snapshot[0]!.rateLimitResetTimes)).toEqual([]); // nothing to persist
+		// Simulate a SECOND process loading the same accounts file: fresh trackers.
+		resetTrackers();
+		const processB = new AccountManager(undefined, {
+			version: 3,
+			activeIndex: 0,
+			accounts: snapshot.map((a) => ({
+				email: a.email,
+				refreshToken: a.refreshToken,
+				addedAt: a.addedAt,
+				lastUsed: a.lastUsed,
+				rateLimitResetTimes: a.rateLimitResetTimes,
+			})),
+			activeIndexByFamily: { codex: 0 },
+		});
+		liveManagers.push(processB);
+		// Process B has a full local bucket for account 0 → it is selectable.
+		expect(processB.getAccountForStrategy("sticky", FAMILY, MODEL)?.index).toBe(0);
+	});
+
+	it("getMinWaitTimeForFamily returns a refill wait (not 0) when ALL accounts are token-depleted", () => {
+		const manager = makeManager(2);
+		drainBucket(manager, 0);
+		drainBucket(manager, 1);
+		// No account selectable now.
+		expect(pick(manager, "sticky")).toBeNull();
+		// But the pool recovers via token refill, so wait must be > 0 (not a 503).
+		const wait = manager.getMinWaitTimeForFamily(FAMILY, MODEL);
+		expect(wait).toBeGreaterThan(0);
+		expect(Number.isFinite(wait)).toBe(true);
+	});
+
+	it("a token-depleted account does NOT accrue a health penalty (no recordRateLimit)", () => {
+		const manager = makeManager(2);
+		const before = manager.getSelectionExplainability(FAMILY, MODEL, Date.now());
+		drainBucket(manager, 0);
+		// Depletion alone must not mark the account rate-limited or cooling down.
+		const acct0 = manager.getAccountsSnapshot()[0]!;
+		expect(acct0.cooldownReason).toBeUndefined();
+		expect(acct0.lastRateLimitReason).toBeUndefined();
+		expect(before.length).toBe(2);
 	});
 });

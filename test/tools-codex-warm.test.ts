@@ -22,7 +22,7 @@ vi.mock("../lib/codex-usage.js", () => ({
 }));
 
 vi.mock("../lib/accounts/warm-request.js", () => ({
-	warmAccountWindow: vi.fn(async () => true),
+	warmAccountWindow: vi.fn(async () => ({ status: "opened" })),
 }));
 
 import { loadAccounts } from "../lib/storage.js";
@@ -72,7 +72,7 @@ beforeEach(() => {
 		persisted: false,
 	} as never);
 	vi.mocked(resolveCodexUsageAccountId).mockReturnValue("acct-123");
-	vi.mocked(warmAccountWindow).mockResolvedValue(true as never);
+	vi.mocked(warmAccountWindow).mockResolvedValue({ status: "opened" } as never);
 });
 
 describe("codex-warm tool (#182)", () => {
@@ -122,9 +122,9 @@ describe("codex-warm tool (#182)", () => {
 				{ email: "b@example.com", refreshToken: "r2" },
 			]) as never,
 		);
-		// Second account's upstream call fails.
+		// Second account's upstream call throws.
 		vi.mocked(warmAccountWindow)
-			.mockResolvedValueOnce(true as never)
+			.mockResolvedValueOnce({ status: "opened" } as never)
 			.mockRejectedValueOnce(new Error("429 too many requests"));
 
 		const tool = createCodexWarmTool(buildCtx());
@@ -136,6 +136,20 @@ describe("codex-warm tool (#182)", () => {
 });
 
 describe("createWarmOne adapter (#182)", () => {
+	it("maps an exhausted (quota-429) account to failed, NOT warmed", async () => {
+		vi.mocked(loadAccounts).mockResolvedValue(
+			storageWith([{ email: "a@example.com", refreshToken: "r1" }]) as never,
+		);
+		vi.mocked(warmAccountWindow).mockResolvedValue({
+			status: "exhausted",
+			detail: "quota/usage limit reached",
+		} as never);
+		const tool = createCodexWarmTool(buildCtx());
+		const output = (await tool.execute({}, {} as never)) as string;
+		expect(output).toMatch(/Failed - quota\/usage limit reached/);
+		expect(output).toContain("Summary: 0 warmed, 1 failed, 0 skipped");
+	});
+
 	it("composes refresh -> resolve id -> warm and returns warmed", async () => {
 		const storage = storageWith([]);
 		const account = { email: "a@example.com", refreshToken: "r1" } as never;

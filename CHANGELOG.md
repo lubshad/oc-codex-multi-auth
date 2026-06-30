@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.4.1] - 2026-06-30
+
+### Fixed
+- Local token-bucket depletion no longer leaks into persisted, cross-process state. 6.4.0 made a depleted account rotate by writing a short synthetic window into `rateLimitResetTimes` — but that field is saved to the shared accounts file and reloaded by every process, so one process exhausting its own in-memory proactive limiter could spuriously mark a server-healthy account as rate-limited in OTHER concurrent processes (the multi-process/PID-offset deployment this tool targets). Account selection (`sticky`, `hybrid`, `round-robin`) and `getMinWaitTimeForFamily` are now token-bucket-aware directly: a locally-depleted account is skipped in-memory with no persisted state, and an all-depleted pool waits for token refill instead of returning a spurious 503. The local skip also no longer records a server-429-style health penalty, so a busy-but-healthy account is not deprioritized in `hybrid` scoring. (#183)
+- `codex-warm` no longer reports a quota-exhausted account as "warmed". A `429` is now classified by reason: a `quota`/`usage_limit` 429 (the window is already spent) is surfaced as a distinct failure, while a transient `tokens`/`concurrent` 429 (window active) still counts as warmed. (#182)
+
 ## [6.4.0] - 2026-06-30
 
 ### Added

@@ -14,11 +14,12 @@ import {
 } from "../lib/accounts/warm-request.js";
 import { CODEX_BASE_URL } from "../lib/constants.js";
 
-function fakeResponse(status: number): Response {
+function fakeResponse(status: number, bodyText = ""): Response {
 	return {
 		ok: status >= 200 && status < 300,
 		status,
 		body: { cancel: vi.fn(async () => undefined) },
+		text: vi.fn(async () => bodyText),
 	} as unknown as Response;
 }
 
@@ -47,7 +48,7 @@ describe("warmAccountWindow (#182)", () => {
 	it("POSTs to /codex/responses with auth headers and returns true on 2xx", async () => {
 		const fetchImpl = vi.fn(async () => fakeResponse(200));
 		const result = await warmAccountWindow({ ...PARAMS, fetchImpl });
-		expect(result).toBe(true);
+		expect(result.status).toBe("opened");
 		expect(fetchImpl).toHaveBeenCalledTimes(1);
 		const [url, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
 		expect(url).toBe(`${CODEX_BASE_URL}/codex/responses`);
@@ -57,9 +58,27 @@ describe("warmAccountWindow (#182)", () => {
 		expect(headers.get("chatgpt-account-id")).toBe("acct-1");
 	});
 
-	it("treats 429 as success (window already active)", async () => {
-		const fetchImpl = vi.fn(async () => fakeResponse(429));
-		await expect(warmAccountWindow({ ...PARAMS, fetchImpl })).resolves.toBe(true);
+	it("treats a token/concurrency 429 as opened (window already active)", async () => {
+		const fetchImpl = vi.fn(async () =>
+			fakeResponse(429, JSON.stringify({ error: { code: "rate_limit_exceeded" } })),
+		);
+		const result = await warmAccountWindow({ ...PARAMS, fetchImpl });
+		expect(result.status).toBe("opened");
+	});
+
+	it("treats a quota/usage-limit 429 as exhausted (NOT warmed)", async () => {
+		const fetchImpl = vi.fn(async () =>
+			fakeResponse(429, JSON.stringify({ error: { code: "usage_limit_reached" } })),
+		);
+		const result = await warmAccountWindow({ ...PARAMS, fetchImpl });
+		expect(result.status).toBe("exhausted");
+		expect(result.detail).toMatch(/quota|usage/i);
+	});
+
+	it("treats a bare 429 with no parseable reason as opened", async () => {
+		const fetchImpl = vi.fn(async () => fakeResponse(429, ""));
+		const result = await warmAccountWindow({ ...PARAMS, fetchImpl });
+		expect(result.status).toBe("opened");
 	});
 
 	it("throws on other non-2xx (e.g. 401)", async () => {

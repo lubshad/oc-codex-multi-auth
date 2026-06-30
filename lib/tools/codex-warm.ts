@@ -53,11 +53,17 @@ export function createWarmOne(
 				detail: "could not resolve account id (re-login may be required)",
 			};
 		}
-		await warmAccountWindow({
+		const result = await warmAccountWindow({
 			accountId,
 			accessToken,
 			organizationId: account.organizationId,
 		});
+		if (result.status === "exhausted") {
+			return {
+				status: "failed",
+				detail: result.detail ?? "quota/usage limit reached",
+			};
+		}
 		return { status: "warmed" };
 	};
 }

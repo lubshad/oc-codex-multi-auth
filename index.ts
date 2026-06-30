@@ -2139,22 +2139,16 @@ while (attempted.size < Math.max(1, accountCount)) {
 								// Consume a token before making the request for proactive rate limiting
 								const tokenConsumed = accountManager.consumeToken(account, modelFamily, model);
 								if (!tokenConsumed) {
-									accountManager.recordRateLimit(account, modelFamily, model);
-									// Mark a short, auto-expiring rate-limit window for this
-									// (family, model) so the depleted account becomes ineligible in
-									// `isRateLimitedForFamily`. Without this, drain-first `sticky`
-									// (and the `hybrid` fast-path) re-select the SAME depleted account
-									// on the next traversal iteration — `attempted` then trips the
-									// guard and the loop 503s while other accounts still have quota.
-									// The window also feeds `getMinWaitTimeForFamily`, so an all-
-									// depleted pool waits for refill instead of failing fast.
-									accountManager.markRateLimitedWithReason(
-										account,
-										ACCOUNT_LIMITS.LOCAL_TOKEN_DEPLETION_COOLDOWN_MS,
-										modelFamily,
-										"tokens",
-										model,
-									);
+									// Local (in-memory, per-process) proactive limiter is depleted for
+									// this account. The rotation selectors are token-bucket-aware, so
+									// they will not re-select this account until a token refills — no
+									// synthetic rate-limit window is written. Crucially we do NOT call
+									// recordRateLimit() here: that records a server-429-style health
+									// penalty and would mis-attribute a purely-local throttle as an
+									// upstream rejection. We also must not persist any local-limiter
+									// state (rateLimitResetTimes is written to the shared accounts file
+									// and would spuriously rate-limit healthy accounts in other
+									// processes). Just account the rotation and move on.
 									runtimeMetrics.accountRotations++;
 									runtimeMetrics.lastError =
 										`Local token bucket depleted for account ${account.index + 1} (${modelFamily}${model ? `:${model}` : ""})`;
@@ -2162,10 +2156,11 @@ while (attempted.size < Math.max(1, accountCount)) {
 									logWarn(
 										`Skipping account ${account.index + 1}: local token bucket depleted for ${modelFamily}${model ? `:${model}` : ""}`,
 									);
-									// Skip THIS account and rotate to the next one. `account.index` is
-									// already in `attempted` (added above), so the traversal loop guard
-									// prevents reselecting it and terminates once all are exhausted.
-									// Using `break` here would abandon every other healthy account.
+									// Skip THIS account and rotate to the next one. The selector's
+									// token-bucket awareness guarantees it advances to an account with
+									// quota (or returns null so the wait/retry path engages via the
+									// token-refill wait in getMinWaitTimeForFamily). `break` would
+									// abandon every other healthy account.
 									continue;
 								}
 

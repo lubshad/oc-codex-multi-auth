@@ -28,6 +28,31 @@ import type { AccountState, ManagedAccount } from "./state.js";
 export class AccountRotation {
 	constructor(private readonly state: AccountState) {}
 
+	/**
+	 * Whether an account can serve a request for this (family, model) right now:
+	 * enabled, not rate-limited (real server 429s tracked in rateLimitResetTimes),
+	 * not cooling down, AND its in-memory local token bucket has a token.
+	 *
+	 * The token-bucket check is what keeps a locally-depleted account out of
+	 * selection. It is intentionally evaluated here (in-memory, per-process)
+	 * rather than by writing a synthetic window into the persisted
+	 * rateLimitResetTimes — that would leak a per-process proactive-limiter
+	 * signal into the cross-process accounts file and spuriously rate-limit
+	 * server-healthy accounts in other processes.
+	 */
+	private isSelectable(
+		account: ManagedAccount,
+		family: ModelFamily,
+		model?: string | null,
+	): boolean {
+		if (account.enabled === false) return false;
+		clearExpiredRateLimits(account);
+		if (isRateLimitedForFamily(account, family, model)) return false;
+		if (this.state.isAccountCoolingDown(account)) return false;
+		const quotaKey = model ? `${family}:${model}` : family;
+		return getTokenTracker().hasToken(account.index, quotaKey);
+	}
+
 	getCurrentOrNextForFamily(
 		family: ModelFamily,
 		model?: string | null,
@@ -41,15 +66,7 @@ export class AccountRotation {
 			const idx = (cursor + i) % count;
 			const account = this.state.accounts[idx];
 			if (!account) continue;
-			if (account.enabled === false) continue;
-
-			clearExpiredRateLimits(account);
-			if (
-				isRateLimitedForFamily(account, family, model) ||
-				this.state.isAccountCoolingDown(account)
-			) {
-				continue;
-			}
+			if (!this.isSelectable(account, family, model)) continue;
 
 			this.state.cursorByFamily[family] = (idx + 1) % count;
 			this.state.currentAccountIndexByFamily[family] = idx;
@@ -70,15 +87,7 @@ export class AccountRotation {
 			const idx = (cursor + i) % count;
 			const account = this.state.accounts[idx];
 			if (!account) continue;
-			if (account.enabled === false) continue;
-
-			clearExpiredRateLimits(account);
-			if (
-				isRateLimitedForFamily(account, family, model) ||
-				this.state.isAccountCoolingDown(account)
-			) {
-				continue;
-			}
+			if (!this.isSelectable(account, family, model)) continue;
 
 			this.state.cursorByFamily[family] = (idx + 1) % count;
 			account.lastUsed = nowMs();
@@ -102,15 +111,9 @@ export class AccountRotation {
 			if (currentAccount) {
 				if (currentAccount.enabled === false) {
 					// Fall through to hybrid selection.
-				} else {
-					clearExpiredRateLimits(currentAccount);
-					if (
-						!isRateLimitedForFamily(currentAccount, family, model) &&
-						!this.state.isAccountCoolingDown(currentAccount)
-					) {
-						currentAccount.lastUsed = nowMs();
-						return currentAccount;
-					}
+				} else if (this.isSelectable(currentAccount, family, model)) {
+					currentAccount.lastUsed = nowMs();
+					return currentAccount;
 				}
 			}
 		}
@@ -123,13 +126,9 @@ export class AccountRotation {
 			.map((account): AccountWithMetrics | null => {
 				if (!account) return null;
 				if (account.enabled === false) return null;
-				clearExpiredRateLimits(account);
-				const isAvailable =
-					!isRateLimitedForFamily(account, family, model) &&
-					!this.state.isAccountCoolingDown(account);
 				return {
 					index: account.index,
-					isAvailable,
+					isAvailable: this.isSelectable(account, family, model),
 					lastUsed: account.lastUsed,
 				};
 			})
@@ -177,20 +176,11 @@ export class AccountRotation {
 		const count = this.state.accounts.length;
 		if (count === 0) return null;
 
-		const isAvailable = (account: ManagedAccount): boolean => {
-			if (account.enabled === false) return false;
-			clearExpiredRateLimits(account);
-			return (
-				!isRateLimitedForFamily(account, family, model) &&
-				!this.state.isAccountCoolingDown(account)
-			);
-		};
-
 		// Prefer the account we are already pinned to while it still has quota.
 		const currentIndex = this.state.currentAccountIndexByFamily[family];
 		if (currentIndex >= 0 && currentIndex < count) {
 			const currentAccount = this.state.accounts[currentIndex];
-			if (currentAccount && isAvailable(currentAccount)) {
+			if (currentAccount && this.isSelectable(currentAccount, family, model)) {
 				currentAccount.lastUsed = nowMs();
 				return currentAccount;
 			}
@@ -201,7 +191,7 @@ export class AccountRotation {
 		for (let idx = 0; idx < count; idx++) {
 			const account = this.state.accounts[idx];
 			if (!account) continue;
-			if (!isAvailable(account)) continue;
+			if (!this.isSelectable(account, family, model)) continue;
 
 			this.state.currentAccountIndexByFamily[family] = idx;
 			this.state.cursorByFamily[family] = (idx + 1) % count;
@@ -326,19 +316,17 @@ export class AccountRotation {
 		const enabledAccounts = this.state.accounts.filter(
 			(account) => account.enabled !== false,
 		);
-		const available = enabledAccounts.filter((account) => {
-			clearExpiredRateLimits(account);
-			return (
-				!isRateLimitedForFamily(account, family, model) &&
-				!this.state.isAccountCoolingDown(account)
-			);
-		});
+		const available = enabledAccounts.filter((account) =>
+			this.isSelectable(account, family, model),
+		);
 		if (available.length > 0) return 0;
 		if (enabledAccounts.length === 0) return 0;
 
 		const waitTimes: number[] = [];
 		const baseKey = getQuotaKey(family);
 		const modelKey = model ? getQuotaKey(family, model) : null;
+		const tokenQuotaKey = model ? `${family}:${model}` : family;
+		const tokenTracker = getTokenTracker();
 
 		for (const account of enabledAccounts) {
 			const baseResetAt = account.rateLimitResetTimes[baseKey];
@@ -355,6 +343,16 @@ export class AccountRotation {
 
 			if (typeof account.coolingDownUntil === "number") {
 				waitTimes.push(Math.max(0, account.coolingDownUntil - now));
+			}
+
+			// An account blocked only by a depleted local token bucket becomes
+			// available again after refill; include that wait so a fully
+			// token-depleted pool waits for refill instead of returning 0 (503).
+			if (account.enabled !== false) {
+				const tokenWait = tokenTracker.msUntilToken(account.index, tokenQuotaKey);
+				if (tokenWait > 0 && Number.isFinite(tokenWait)) {
+					waitTimes.push(tokenWait);
+				}
 			}
 		}
 

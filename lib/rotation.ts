@@ -226,6 +226,32 @@ export class TokenBucketTracker {
   }
 
   /**
+   * Whether at least one token is currently available (after refill). Used by
+   * the rotation selectors to skip an account whose local proactive limiter is
+   * depleted WITHOUT writing any persisted state — the token bucket is an
+   * in-memory, per-process signal and must never leak into the cross-process
+   * accounts file (see issue: local depletion previously spuriously
+   * rate-limited healthy accounts in other processes).
+   */
+  hasToken(accountIndex: number, quotaKey?: string): boolean {
+    return this.getTokens(accountIndex, quotaKey) >= 1;
+  }
+
+  /**
+   * Milliseconds until at least one token is available. Returns 0 when a token
+   * is available now. Used by the wait-time calculation so a fully
+   * token-depleted pool waits for refill instead of failing fast.
+   */
+  msUntilToken(accountIndex: number, quotaKey?: string): number {
+    const current = this.getTokens(accountIndex, quotaKey);
+    if (current >= 1) return 0;
+    const deficit = 1 - current;
+    const perMs = this.config.tokensPerMinute / 60_000;
+    if (perMs <= 0) return Number.POSITIVE_INFINITY;
+    return Math.ceil(deficit / perMs);
+  }
+
+  /**
    * Attempt to consume a token. Returns true if successful, false if bucket is empty.
    */
   tryConsume(accountIndex: number, quotaKey?: string): boolean {

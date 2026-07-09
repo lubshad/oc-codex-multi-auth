@@ -247,6 +247,23 @@ describe("Graceful shutdown", () => {
 			expect(processExitSpy).toHaveBeenCalledWith(143);
 		});
 
+		// `ownsProcess` is read at signal time, not captured when the handlers are
+		// installed, so an entrypoint may opt in after the first registerCleanup.
+		// A refactor that caches the flag at registration time would fail here.
+		it("honours ownership claimed after the signal handlers are installed", async () => {
+			const { registerCleanup: freshRegister, setShutdownOwnsProcess } = await freshShutdown();
+
+			const cleanupFn = vi.fn();
+			freshRegister(cleanupFn); // installs the handlers while still a guest
+			setShutdownOwnsProcess(true);
+
+			process.emit("SIGINT", "SIGINT");
+			await settle();
+
+			expect(cleanupFn).toHaveBeenCalled();
+			expect(processExitSpy).toHaveBeenCalledWith(130);
+		});
+
 		it("awaits cleanup before exiting on the owning path", async () => {
 			const { registerCleanup: freshRegister, setShutdownOwnsProcess } = await freshShutdown();
 			setShutdownOwnsProcess(true);

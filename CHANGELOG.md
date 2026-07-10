@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.7.1] - 2026-07-10
+
+### Fixed
+- GPT-5.6 requests no longer fail with HTTP 400. The backend rejects any request carrying the `x-openai-internal-codex-responses-lite` header that does not also set `reasoning.context = "all_turns"`, so every `gpt-5.6-sol` / `gpt-5.6-terra` / `gpt-5.6-luna` turn in 6.7.0 failed with `unsupported_value` on `reasoning.context`. Because that error is not `model_not_supported_with_chatgpt_account`, the `sol → terra → luna → gpt-5.5` degradation never triggered and every turn hard-failed. This matches upstream `codex-rs/core/src/client.rs` (`build_reasoning`), where `context` is set to `AllTurns` exactly when `use_responses_lite` is true and omitted otherwise. The field is written inside the responses-lite reshape, which is applied to a `structuredClone` for lite models only, so the canonical body and the 5.6 → 5.5 fallback remain free of `context`. Reported and fixed by @UnknOownU, verified against the live Codex backend. (#191, #192)
+
 ## [6.7.0] - 2026-07-10
 
 ### Added

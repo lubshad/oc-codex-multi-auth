@@ -123,8 +123,14 @@ export function mergeStoredAccountPair<T extends MergeableAccountRecord>(
 		expiresAt: newer.expiresAt ?? older.expiresAt,
 		oauthScope: newer.oauthScope ?? older.oauthScope,
 		// Follows the token fields: the rotation stamp must describe the
-		// refreshToken that actually survived the merge.
-		tokenRotatedAt: newer.tokenRotatedAt ?? older.tokenRotatedAt,
+		// refreshToken that actually survived the merge. No fallback to the
+		// older stamp when the newer token wins — attaching an old timestamp
+		// to a different token would make the surviving credential look older
+		// than it is to the save-time clobber guard.
+		tokenRotatedAt:
+			newer.refreshToken !== undefined && newer.refreshToken !== null
+				? newer.tokenRotatedAt
+				: older.tokenRotatedAt,
 		enabled: mergedEnabled,
 		addedAt: Math.max(target.addedAt ?? 0, source.addedAt ?? 0),
 		lastUsed: Math.max(target.lastUsed ?? 0, source.lastUsed ?? 0),

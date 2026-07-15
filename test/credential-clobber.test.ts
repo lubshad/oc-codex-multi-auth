@@ -40,8 +40,17 @@ vi.mock("../lib/storage.js", async (importOriginal) => {
 	};
 });
 
+vi.mock("../lib/auth/auth.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../lib/auth/auth.js")>();
+	return {
+		...actual,
+		refreshAccessToken: vi.fn(),
+	};
+});
+
 import { AccountPersistence } from "../lib/accounts/persistence.js";
 import { AccountState } from "../lib/accounts/state.js";
+import * as authModule from "../lib/auth/auth.js";
 import { shouldRefreshProactively } from "../lib/proactive-refresh.js";
 import { RefreshQueue } from "../lib/refresh-queue.js";
 
@@ -208,9 +217,7 @@ describe("RefreshQueue settled-rotation reuse", () => {
 			refresh: "rt-new",
 			expires: Date.now() + 3_600_000,
 		};
-		const executeRefresh = vi.fn(async () => rotated);
-		// @ts-expect-error - override the private network call for the test
-		queue.executeRefresh = executeRefresh;
+		vi.mocked(authModule.refreshAccessToken).mockResolvedValue(rotated);
 
 		const first = await queue.refresh("rt-old");
 		expect(first).toEqual(rotated);
@@ -220,7 +227,7 @@ describe("RefreshQueue settled-rotation reuse", () => {
 		const second = await queue.refresh("rt-old");
 
 		expect(second).toEqual(rotated);
-		expect(executeRefresh).toHaveBeenCalledTimes(1);
+		expect(authModule.refreshAccessToken).toHaveBeenCalledTimes(1);
 	});
 });
 

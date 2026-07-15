@@ -117,16 +117,23 @@ export class AccountPersistence {
 				continue;
 			}
 
+			const mineIdentity = getWorkspaceIdentityKey(mine);
 			mine.refreshToken = theirs.refreshToken;
 			mine.accessToken = theirs.accessToken;
 			mine.expiresAt = theirs.expiresAt;
 			mine.oauthScope = theirs.oauthScope ?? mine.oauthScope;
 			mine.tokenRotatedAt = theirs.tokenRotatedAt;
 
-			// Mirror into live state (outgoing.accounts is built from
-			// state.accounts in order) so this process stops refreshing with
-			// the consumed token.
-			const live = this.state.accounts[i];
+			// Mirror into live state so this process stops refreshing with the
+			// consumed token. Matched by identity key rather than array index:
+			// outgoing is currently built from state.accounts in order, but the
+			// mirror must not silently target the wrong account if that ever
+			// changes. The identity key is computed from `mine` BEFORE the
+			// credential adoption above, since the token participates in the
+			// key for records without workspace ids.
+			const live = this.state.accounts.find(
+				(candidate) => getWorkspaceIdentityKey(candidate) === mineIdentity,
+			);
 			if (live) {
 				live.refreshToken = theirs.refreshToken;
 				live.access = theirs.accessToken;

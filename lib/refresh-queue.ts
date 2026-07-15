@@ -150,7 +150,6 @@ export class RefreshQueue {
     if (recentRotation) {
       this.metrics.rotationReused += 1;
       log.info("Reusing settled rotation result for consumed token", {
-        tokenSuffix: refreshToken.slice(-6),
         ageMs: Date.now() - recentRotation.settledAt,
       });
       return recentRotation.result;
@@ -334,6 +333,7 @@ export class RefreshQueue {
   clear(): void {
     this.pending.clear();
     this.tokenRotationMap.clear();
+    this.recentRotations.clear();
     this.metrics = createInitialMetrics();
   }
 

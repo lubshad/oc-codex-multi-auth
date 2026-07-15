@@ -16,9 +16,20 @@ import { SCOPE } from "../lib/auth/auth.js";
 
 vi.mock("../lib/storage.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/storage.js")>();
+  const saveAccounts = vi.fn().mockResolvedValue(undefined);
   return {
     ...actual,
-    saveAccounts: vi.fn().mockResolvedValue(undefined),
+    saveAccounts,
+    // Persistence saves through the transaction; route its persist callback
+    // to the saveAccounts mock (current=null: no on-disk state to merge).
+    withAccountStorageTransaction: vi.fn(
+      async (
+        handler: (
+          current: null,
+          persist: (storage: unknown) => Promise<void>,
+        ) => Promise<unknown>,
+      ) => handler(null, saveAccounts as (storage: unknown) => Promise<void>),
+    ),
   };
 });
 

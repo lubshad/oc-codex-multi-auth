@@ -144,6 +144,7 @@ vi.mock("../lib/config.js", () => ({
 
 vi.mock("../lib/request/request-transformer.js", () => ({
 	applyFastSessionDefaults: <T>(config: T) => config,
+	clampReasoningForModel: <T>(reasoning: T) => reasoning,
 	upsertBackendModelIdentityMessage: (input: unknown) => input,
 }));
 
@@ -2752,8 +2753,25 @@ describe("OpenAIOAuthPlugin edge cases", () => {
 	});
 
 	it("handles storage errors in codex-switch", async () => {
-		const { saveAccounts } = await import("../lib/storage.js");
-		vi.mocked(saveAccounts).mockRejectedValueOnce(new Error("Write failed"));
+		// codex-switch persists through withAccountStorageTransaction's
+		// `persist` callback (not the standalone saveAccounts export), so the
+		// failure must be injected there to exercise the tool's save-failed
+		// branch.
+		const { withAccountStorageTransaction } = await import("../lib/storage.js");
+		vi.mocked(withAccountStorageTransaction).mockImplementationOnce(
+			async <T>(
+				callback: (
+					current: typeof mockStorage | null,
+					persist: (storage: typeof mockStorage) => Promise<void>,
+				) => Promise<T>,
+			) => {
+				const loadedStorage = cloneMockStorage();
+				const persist = async () => {
+					throw new Error("Write failed");
+				};
+				return await callback(loadedStorage, persist);
+			},
+		);
 
 		mockStorage.accounts = [{ refreshToken: "r1", email: "user@example.com" }];
 
@@ -2763,7 +2781,8 @@ describe("OpenAIOAuthPlugin edge cases", () => {
 		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
 
 		const result = await plugin.tool["codex-switch"].execute({ index: 1 });
-		expect(result).toContain("failed to persist");
+		expect(result).toContain("Failed to switch to");
+		expect(result).toContain("account storage could not be updated");
 	});
 
 	it("handles export errors", async () => {
@@ -2848,8 +2867,25 @@ describe("OpenAIOAuthPlugin edge cases", () => {
 	});
 
 	it("handles storage errors in codex-remove", async () => {
-		const { saveAccounts } = await import("../lib/storage.js");
-		vi.mocked(saveAccounts).mockRejectedValueOnce(new Error("Write failed"));
+		// codex-remove persists through withAccountStorageTransaction's
+		// `persist` callback (not the standalone saveAccounts export), so the
+		// failure must be injected there to exercise the tool's save-failed
+		// branch.
+		const { withAccountStorageTransaction } = await import("../lib/storage.js");
+		vi.mocked(withAccountStorageTransaction).mockImplementationOnce(
+			async <T>(
+				callback: (
+					current: typeof mockStorage | null,
+					persist: (storage: typeof mockStorage) => Promise<void>,
+				) => Promise<T>,
+			) => {
+				const loadedStorage = cloneMockStorage();
+				const persist = async () => {
+					throw new Error("Write failed");
+				};
+				return await callback(loadedStorage, persist);
+			},
+		);
 
 		mockStorage.accounts = [
 			{ refreshToken: "r1", email: "user1@example.com" },
@@ -2862,7 +2898,8 @@ describe("OpenAIOAuthPlugin edge cases", () => {
 		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
 
 		const result = await plugin.tool["codex-remove"].execute({ index: 1, confirm: true });
-		expect(result).toContain("failed to persist");
+		expect(result).toContain("Failed to remove");
+		expect(result).toContain("account storage could not be updated");
 	});
 
 	it("adjusts activeIndex when removing account before it", async () => {

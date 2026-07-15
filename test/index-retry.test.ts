@@ -191,6 +191,12 @@ vi.mock("../lib/storage.js", () => ({
 	getStoragePath: () => "",
 	loadAccounts: async () => null,
 	saveAccounts: async () => {},
+	withAccountStorageTransaction: async (
+		handler: (
+			current: null,
+			persist: (storage: unknown) => Promise<void>,
+		) => Promise<unknown>,
+	) => handler(null, async () => {}),
 	setStoragePath: () => {},
 	exportAccounts: async () => {},
 	importAccounts: async () => ({ imported: 0, total: 0 }),

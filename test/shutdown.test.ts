@@ -9,9 +9,18 @@ import { AccountManager } from "../lib/accounts.js";
 
 vi.mock("../lib/storage.js", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("../lib/storage.js")>();
+	const saveAccounts = vi.fn().mockResolvedValue(undefined);
 	return {
 		...actual,
-		saveAccounts: vi.fn().mockResolvedValue(undefined),
+		saveAccounts,
+		withAccountStorageTransaction: vi.fn(
+			async (
+				handler: (
+					current: null,
+					persist: (storage: unknown) => Promise<void>,
+				) => Promise<unknown>,
+			) => handler(null, saveAccounts as (storage: unknown) => Promise<void>),
+		),
 	};
 });
 

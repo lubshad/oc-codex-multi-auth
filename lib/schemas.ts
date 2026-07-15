@@ -121,6 +121,7 @@ export const AccountMetadataV3Schema = z.object({
 	accessToken: z.string().optional(),
 	expiresAt: z.number().optional(),
 	oauthScope: z.string().optional(),
+	tokenRotatedAt: z.number().optional(),
 	enabled: z.boolean().optional(),
 	addedAt: z.number(),
 	lastUsed: z.number(),

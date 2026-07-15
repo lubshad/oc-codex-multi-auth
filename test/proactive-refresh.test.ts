@@ -38,9 +38,23 @@ describe("proactive-refresh", () => {
 	});
 
 	describe("shouldRefreshProactively", () => {
-		it("returns false when no expiry is set", () => {
-			const account = createMockAccount({ expires: undefined });
+		it("returns false when no expiry is set but an access token exists", () => {
+			const account = createMockAccount({
+				expires: undefined,
+				access: "access-token",
+			});
 			expect(shouldRefreshProactively(account)).toBe(false);
+		});
+
+		it("returns true when there is no access token, even with no expiry", () => {
+			// The missing-token check must run before the expiry guard: an
+			// account with a refresh token but neither access token nor expiry
+			// would otherwise never be refreshed proactively.
+			const account = createMockAccount({
+				expires: undefined,
+				access: undefined,
+			});
+			expect(shouldRefreshProactively(account)).toBe(true);
 		});
 
 		it("returns true when no access token exists", () => {

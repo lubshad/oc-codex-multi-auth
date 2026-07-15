@@ -18,7 +18,7 @@
  * pass an explicit confirmation (see `lib/tools/codex-reset.ts`).
  */
 
-import { randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 
 import {
 	isCodexAbortError,
@@ -153,9 +153,26 @@ export function formatCodexResetCredit(credit: CodexResetCredit): string {
 	return parts.join("  ");
 }
 
-/** Fresh idempotency key for a redeem request. */
-export function createRedeemRequestId(): string {
-	return randomUUID();
+/**
+ * Idempotency key for redeeming a specific credit.
+ *
+ * The key must be STABLE across invocations for the same credit: a credit can
+ * be redeemed at most once, so "the same logical redemption" is exactly "the
+ * same credit id". A per-call random UUID would hand the backend a brand-new
+ * key on every retry, making the idempotency mechanism inert — a consume whose
+ * response was lost could then be retried without the backend recognizing it.
+ * The key is derived deterministically from the credit id (UUID-shaped so the
+ * backend sees the same format the official clients send).
+ */
+export function createRedeemRequestId(creditId: string): string {
+	const digest = createHash("sha256")
+		.update(`oc-codex-multi-auth:redeem-request:${creditId}`)
+		.digest();
+	const bytes = digest.subarray(0, 16);
+	bytes[6] = ((bytes[6] ?? 0) & 0x0f) | 0x50;
+	bytes[8] = ((bytes[8] ?? 0) & 0x3f) | 0x80;
+	const hex = bytes.toString("hex");
+	return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
 async function requestCodexResetJson<T>(params: {

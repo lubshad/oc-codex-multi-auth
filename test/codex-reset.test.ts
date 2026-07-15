@@ -179,8 +179,18 @@ describe("consumeCodexResetCredit", () => {
 });
 
 describe("createRedeemRequestId", () => {
-	it("returns a fresh id per redemption so a retry cannot spend two credits", () => {
-		expect(createRedeemRequestId()).not.toBe(createRedeemRequestId());
+	it("is stable for the same credit so the backend can dedupe a retried consume", () => {
+		expect(createRedeemRequestId("credit-1")).toBe(
+			createRedeemRequestId("credit-1"),
+		);
+	});
+
+	it("differs across credits and is UUID-shaped", () => {
+		const id = createRedeemRequestId("credit-1");
+		expect(id).not.toBe(createRedeemRequestId("credit-2"));
+		expect(id).toMatch(
+			/^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+		);
 	});
 });
 

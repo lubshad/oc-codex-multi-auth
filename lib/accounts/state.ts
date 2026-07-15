@@ -43,6 +43,8 @@ export interface ManagedAccount {
 	access?: string;
 	expires?: number;
 	oauthScope?: string;
+	/** When the refresh token was last rotated (ms since epoch); see AccountMetadataV3. */
+	tokenRotatedAt?: number;
 	addedAt: number;
 	lastUsed: number;
 	lastSwitchReason?: "rate-limit" | "initial" | "rotation";
@@ -167,6 +169,12 @@ export class AccountState {
 						expires:
 							matchesFallback && authFallback ? authFallback.expires : account.expiresAt,
 						oauthScope,
+						tokenRotatedAt:
+							matchesFallback &&
+							authFallback &&
+							authFallback.refresh !== account.refreshToken
+								? baseNow
+								: account.tokenRotatedAt,
 						addedAt: clampNonNegativeInt(account.addedAt, baseNow),
 						lastUsed: clampNonNegativeInt(account.lastUsed, 0),
 						lastSwitchReason: account.lastSwitchReason,
@@ -429,6 +437,10 @@ export class AccountState {
 			account.oauthScope = scope;
 		}
 		if (previousRefreshToken !== account.refreshToken) {
+			// Stamp the rotation so a concurrent process persisting a stale
+			// snapshot can recognize this token as the newer one and adopt it
+			// instead of clobbering it (single-use refresh tokens).
+			account.tokenRotatedAt = nowMs();
 			this.authFailuresByRefreshToken.delete(previousRefreshToken);
 			// A single OAuth login produces sibling accounts (distinct orgs) that
 			// SHARE one refresh token. OpenAI rotates the refresh token on refresh,
@@ -472,6 +484,7 @@ export class AccountState {
 				// The expired access token on the sibling forces a fresh refresh
 				// (with the now-valid token) the next time it is selected.
 				sibling.expires = 0;
+				sibling.tokenRotatedAt = nowMs();
 			}
 		}
 		this.authFailuresByRefreshToken.delete(previousRefreshToken);

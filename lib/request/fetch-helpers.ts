@@ -1224,11 +1224,15 @@ function parseRetryAfterMs(
                 }
         }
 
+        // The header paths mirror the body fields above and get the same 5-min
+        // cap: an oversized or bogus `retry-after` must not freeze an account
+        // far past the cap the body path enforces. The reset-at paths below are
+        // deliberately uncapped — quota windows legitimately reset hours out.
         const retryAfterMsHeader = response.headers.get("retry-after-ms");
         if (retryAfterMsHeader) {
                 const parsed = Number.parseInt(retryAfterMsHeader, 10);
                 if (!Number.isNaN(parsed) && parsed > 0) {
-                        return parsed;
+                        return Math.min(parsed, MAX_RETRY_DELAY_MS);
                 }
         }
 
@@ -1236,7 +1240,7 @@ function parseRetryAfterMs(
         if (retryAfterHeader) {
                 const parsed = Number.parseInt(retryAfterHeader, 10);
                 if (!Number.isNaN(parsed) && parsed > 0) {
-                        return parsed * 1000;
+                        return Math.min(parsed * 1000, MAX_RETRY_DELAY_MS);
                 }
         }
 

@@ -28,11 +28,7 @@
 import { promises as fs } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { tool, type ToolDefinition } from "@opencode-ai/plugin/tool";
-import {
-	clearAccounts,
-	loadAccounts,
-	saveAccounts,
-} from "../storage.js";
+import { withAccountStorageTransaction, withStorageLock } from "../storage.js";
 import {
 	deleteFromKeychain,
 	isKeychainOptInEnabled,
@@ -223,27 +219,34 @@ export function createCodexKeychainTool(ctx: ToolContext): ToolDefinition {
 				if (!optIn) {
 					return "codex-keychain migrate: refusing to migrate because CODEX_KEYCHAIN is not set to 1. Enable the opt-in first, then re-run this command.";
 				}
-				const storage = await loadAccounts();
-				if (!storage) {
-					return "codex-keychain migrate: no accounts found to migrate. Nothing to do.";
-				}
-				// Re-saving under the opt-in path triggers the same keychain
-				// write + JSON-backup flow used by every rotation save, so we
-				// avoid duplicating the migration logic here.
-				await saveAccounts(storage);
-				return [
-					...formatUiHeader(ui, "Codex keychain migrate"),
-					"",
-					formatUiItem(
-						ui,
-						`Migrated ${storage.accounts.length} account(s) to the OS keychain.`,
-					),
-					formatUiKeyValue(ui, "Project scope", projectKey ?? "global"),
-					formatUiItem(
-						ui,
-						"On-disk JSON (if any) was renamed with a .migrated-to-keychain.<timestamp> suffix. Use `codex-keychain rollback` to restore it.",
-					),
-				].join("\n");
+				// Read and re-save under a single storage-lock transaction so a
+				// concurrent rotation save landing between the read and the
+				// write cannot be clobbered by a stale snapshot (the docstring
+				// above claims this already ran under the same lock as
+				// saveAccounts/loadAccounts; loadAccounts()+saveAccounts() as
+				// two independent calls did not actually guarantee that).
+				return withAccountStorageTransaction(async (current, persist) => {
+					if (!current) {
+						return "codex-keychain migrate: no accounts found to migrate. Nothing to do.";
+					}
+					// Re-saving under the opt-in path triggers the same keychain
+					// write + JSON-backup flow used by every rotation save, so we
+					// avoid duplicating the migration logic here.
+					await persist(current);
+					return [
+						...formatUiHeader(ui, "Codex keychain migrate"),
+						"",
+						formatUiItem(
+							ui,
+							`Migrated ${current.accounts.length} account(s) to the OS keychain.`,
+						),
+						formatUiKeyValue(ui, "Project scope", projectKey ?? "global"),
+						formatUiItem(
+							ui,
+							"On-disk JSON (if any) was renamed with a .migrated-to-keychain.<timestamp> suffix. Use `codex-keychain rollback` to restore it.",
+						),
+					].join("\n");
+				});
 			}
 
 			// rollback
@@ -267,72 +270,144 @@ export function createCodexKeychainTool(ctx: ToolContext): ToolDefinition {
 				return `codex-keychain rollback: failed to read backup at ${mostRecent}: ${(err as Error).message}`;
 			}
 
-			// Wipe the keychain entry + any current on-disk file, then rename
-			// the backup back to the canonical storage path so the next load
-			// reads from disk again. clearAccounts handles both sides.
-			await clearAccounts();
-
-			// Silent-clobber guard (F1 post-merge MEDIUM finding). On POSIX,
-			// `fs.rename(backup, storagePath)` silently overwrites an
-			// existing destination. If `clearAccounts` failed to unlink the
-			// current JSON (EACCES/EBUSY) or a race write landed a new file
-			// between clearAccounts and rename, the user's current accounts
-			// would be silently discarded with no way to recover them.
-			// Require explicit `confirm=true` before overwriting; without
-			// it, refuse and surface the offending path.
-			let currentExists = false;
-			try {
-				await fs.access(storagePath);
-				currentExists = true;
-			} catch {
-				/* canonical path is clear; safe to rename */
-			}
-			let preRollbackArchive: string | null = null;
-			if (currentExists) {
-				if (!confirm) {
-					return [
-						`codex-keychain rollback: refusing to overwrite existing accounts file at ${storagePath}.`,
-						`Backup at ${mostRecent} was not restored.`,
-						"Pass confirm=true to archive the current file as .pre-rollback.<timestamp> and proceed, or move the current file aside and re-run.",
-					].join("\n");
-				}
-				const archiveSuffix = new Date()
-					.toISOString()
-					.replace(/[:.]/g, "-");
-				preRollbackArchive = `${storagePath}.pre-rollback.${archiveSuffix}`;
+			// Everything below mutates the canonical storage path (JSON file +
+			// keychain entry) and must run as one critical section under the
+			// same mutex loadAccounts/saveAccounts use, so a concurrent
+			// rotation save cannot land between the existence check and the
+			// final rename below (the TOCTOU this file's docstring claimed was
+			// already impossible). withStorageLock is NOT re-entrant, so this
+			// callback uses raw fs operations + the already-unlocked
+			// deleteFromKeychain instead of the locked clearAccounts/
+			// loadAccounts/saveAccounts wrappers -- calling any of those in
+			// here would deadlock against this very lock acquisition.
+			//
+			// Silent-clobber guard (F1 post-merge MEDIUM finding) is folded
+			// into the same critical section: on POSIX, `fs.rename(backup,
+			// storagePath)` silently overwrites an existing destination, so a
+			// current file is archived (with explicit confirm=true) or refused
+			// rather than deleted outright before the backup takes its place.
+			const rollbackResult = await withStorageLock(async () => {
+				const warnings: string[] = [];
+				let currentExists = false;
 				try {
-					await fs.rename(storagePath, preRollbackArchive);
+					await fs.access(storagePath);
+					currentExists = true;
 				} catch (err) {
-					return `codex-keychain rollback: failed to archive current accounts file at ${storagePath} -> ${preRollbackArchive}: ${(err as Error).message}. Backup at ${mostRecent} was not restored.`;
+					const code = (err as NodeJS.ErrnoException).code;
+					if (code !== "ENOENT") {
+						// Only ENOENT means "nothing at this path". Any other
+						// failure (EACCES, a transient FS error, ...) means we
+						// genuinely don't know whether a current file exists, so
+						// proceeding past the confirm guard could silently
+						// clobber live credentials. Abort instead of guessing.
+						return {
+							ok: false as const,
+							message: `codex-keychain rollback: failed to check for an existing accounts file at ${storagePath}: ${(err as Error).message}. Aborted.`,
+						};
+					}
+					/* ENOENT: canonical path is clear; safe to rename */
 				}
-			}
+				let preRollbackArchive: string | null = null;
+				if (currentExists) {
+					if (!confirm) {
+						return {
+							ok: false as const,
+							message: [
+								`codex-keychain rollback: refusing to overwrite existing accounts file at ${storagePath}.`,
+								`Backup at ${mostRecent} was not restored.`,
+								"Pass confirm=true to archive the current file as .pre-rollback.<timestamp> and proceed, or move the current file aside and re-run.",
+							].join("\n"),
+						};
+					}
+					const archiveSuffix = new Date()
+						.toISOString()
+						.replace(/[:.]/g, "-");
+					preRollbackArchive = `${storagePath}.pre-rollback.${archiveSuffix}`;
+					try {
+						await fs.rename(storagePath, preRollbackArchive);
+					} catch (err) {
+						return {
+							ok: false as const,
+							message: `codex-keychain rollback: failed to archive current accounts file at ${storagePath} -> ${preRollbackArchive}: ${(err as Error).message}. Backup at ${mostRecent} was not restored.`,
+						};
+					}
+				}
 
-			try {
-				await fs.rename(mostRecent, storagePath);
-			} catch (err) {
-				return `codex-keychain rollback: failed to rename ${mostRecent} -> ${storagePath}: ${(err as Error).message}`;
-			}
-			// Re-apply 0o600 after rollback rename (F1 post-merge LOW
-			// finding). Mirror the chmod applied on the backup-write path
-			// so a restored file can never end up group/world-readable even
-			// if the backup's mode drifted between migration and rollback.
-			// Windows ignores POSIX mode bits, so skip there.
-			if (process.platform !== "win32") {
-				try {
-					await fs.chmod(storagePath, 0o600);
-				} catch {
-					/* non-fatal: file is restored, mode drift is a hardening
-					 * nicety. Swallow to avoid failing the rollback on a
-					 * permission-sensitive mount. */
+				// Apply 0o600 to the BACKUP file BEFORE promoting it, so the
+				// active file can never briefly (or permanently, if the
+				// process dies between rename and chmod) end up group/world
+				// readable. rename() preserves the source file's mode, so
+				// chmodding the backup here has the same effect on the
+				// eventual `storagePath` as chmodding it after the rename
+				// would have -- without the intermediate window. Windows
+				// ignores POSIX mode bits, so skip there. A chmod failure is
+				// a hardening nicety, not a reason to abort a recovery tool
+				// on a permission-quirky mount -- but it must not be
+				// silently swallowed either.
+				if (process.platform !== "win32") {
+					try {
+						await fs.chmod(mostRecent, 0o600);
+					} catch (err) {
+						warnings.push(
+							`codex-keychain rollback: could not set restrictive permissions on the backup before restoring it (${(err as Error).message}). The restored file's permissions were not hardened; verify them manually.`,
+						);
+					}
 				}
+
+				try {
+					await fs.rename(mostRecent, storagePath);
+				} catch (err) {
+					const renameError = (err as Error).message;
+					if (preRollbackArchive) {
+						// The current file was already archived; try to put it
+						// back so this failure doesn't leave the canonical path
+						// empty.
+						try {
+							await fs.rename(preRollbackArchive, storagePath);
+							return {
+								ok: false as const,
+								message: `codex-keychain rollback: failed to promote backup ${mostRecent} -> ${storagePath}: ${renameError}. Recovered by restoring the previously archived file from ${preRollbackArchive}.`,
+							};
+						} catch (recoveryErr) {
+							return {
+								ok: false as const,
+								message: `codex-keychain rollback: failed to promote backup ${mostRecent} -> ${storagePath}: ${renameError}. Recovery also failed: could not restore the archived file from ${preRollbackArchive} back to ${storagePath}: ${(recoveryErr as Error).message}. Manual intervention required -- check both ${preRollbackArchive} and ${mostRecent}.`,
+							};
+						}
+					}
+					return {
+						ok: false as const,
+						message: `codex-keychain rollback: failed to rename ${mostRecent} -> ${storagePath}: ${renameError}`,
+					};
+				}
+				// Best-effort keychain delete now that the backup is active;
+				// rollback means "stop trusting the keychain copy", so this
+				// runs whenever opt-in is (still) on, mirroring clearAccounts'
+				// own opt-in-gated delete. A false/failed delete does not fail
+				// the rollback (the JSON file is already authoritative again),
+				// but the operator needs to know a stale keychain copy might
+				// still be preferred on the next load.
+				if (optIn) {
+					try {
+						const deleted = await deleteFromKeychain(projectKey);
+						if (!deleted) {
+							warnings.push(
+								"codex-keychain rollback: could not confirm the OS-keychain entry was deleted. The keychain copy may still exist and would be preferred over this restored file on the next load -- delete it manually or disable CODEX_KEYCHAIN.",
+							);
+						}
+					} catch (err) {
+						warnings.push(
+							`codex-keychain rollback: failed to delete the OS-keychain entry: ${(err as Error).message}. The keychain copy may still exist and would be preferred over this restored file on the next load -- delete it manually or disable CODEX_KEYCHAIN.`,
+						);
+					}
+				}
+				return { ok: true as const, preRollbackArchive, warnings };
+			});
+
+			if (!rollbackResult.ok) {
+				return rollbackResult.message;
 			}
-			// Best-effort keychain delete in case opt-in is still on; the
-			// storage layer will honour that on subsequent saves.
-			try {
-				await deleteFromKeychain(projectKey);
-			} catch {
-				/* already deleted by clearAccounts */
-			}
+			const preRollbackArchive = rollbackResult.preRollbackArchive;
 
 			const lines: string[] = [
 				...formatUiHeader(ui, "Codex keychain rollback"),
@@ -351,6 +426,9 @@ export function createCodexKeychainTool(ctx: ToolContext): ToolDefinition {
 						preRollbackArchive,
 					),
 				);
+			}
+			for (const warning of rollbackResult.warnings) {
+				lines.push(formatUiItem(ui, warning, "warning"));
 			}
 			lines.push(
 				formatUiItem(

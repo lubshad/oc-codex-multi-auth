@@ -21,6 +21,7 @@ import {
 	formatCodexResetCredit,
 	parseCodexResetCredits,
 	selectRedeemableCredit,
+	type CodexResetConsumePayload,
 	type CodexResetCreditsSummary,
 } from "../codex-reset.js";
 import {
@@ -325,11 +326,41 @@ export function createCodexResetTool(ctx: ToolContext): ToolDefinition {
 					].join("\n");
 				}
 
-				const result = await consumeCodexResetCredit({
-					...request,
-					creditId: credit.id,
-					redeemRequestId: createRedeemRequestId(),
-				});
+				let result: CodexResetConsumePayload;
+				try {
+					result = await consumeCodexResetCredit({
+						...request,
+						creditId: credit.id,
+						redeemRequestId: createRedeemRequestId(credit.id),
+					});
+				} catch (error) {
+					// The POST may have reached the backend before the failure
+					// (timeout, dropped response), so the redemption outcome is
+					// genuinely unknown — reporting `redeemed: false` here could
+					// send the user to spend a second credit. The idempotency key
+					// is derived from the credit id, so retrying the SAME credit
+					// is safe; the guidance below is about picking a different one.
+					const consumeError = (
+						error instanceof Error ? error.message : String(error)
+					).slice(0, 160);
+					if (outputFormat === "json") {
+						return renderJsonOutput({
+							...identity,
+							action: "consume",
+							redeemed: null,
+							reason: "consume-failed",
+							credit,
+							error: consumeError,
+							message: `The consume request failed but may have reached the backend. Run codex-reset (status) and check whether ${credit.id} is still available before redeeming another credit.`,
+						});
+					}
+					return [
+						`${displayLabel}:`,
+						`  Error: ${consumeError}`,
+						"  redemption outcome unknown: the request may have reached the backend.",
+						`  Run codex-reset (status) and check whether ${credit.id} is still available before redeeming another credit.`,
+					].join("\n");
+				}
 
 				// Past this point the credit is spent and cannot be recovered. The
 				// usage refresh below is a courtesy read, so its failure must never

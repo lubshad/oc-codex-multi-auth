@@ -95,6 +95,17 @@ export class RefreshQueue {
   private tokenRotationMap: Map<string, string> = new Map();
 
   /**
+   * Successful results of recently-SETTLED rotations, keyed by the consumed
+   * (pre-rotation) token. The in-flight dedup above only protects callers
+   * that arrive while the refresh is pending; a sibling that captured the
+   * old token just before rotation and calls refresh() after the first
+   * refresh settles would otherwise burn the single-use token and take a
+   * spurious 401. Entries live for `maxEntryAgeMs`, same as pending entries.
+   */
+  private recentRotations: Map<string, { result: TokenResult; settledAt: number }> =
+    new Map();
+
+  /**
    * Maximum time to keep a refresh entry in the queue (prevents memory leaks
    * from stuck requests). After this timeout, the entry is removed and new
    * callers will trigger a fresh refresh.
@@ -131,6 +142,17 @@ export class RefreshQueue {
         waitingMs: Date.now() - existing.startedAt,
       });
       return existing.promise;
+    }
+
+    // A refresh with this exact token already rotated and settled moments
+    // ago: hand back that result instead of re-consuming a single-use token.
+    const recentRotation = this.recentRotations.get(refreshToken);
+    if (recentRotation) {
+      this.metrics.rotationReused += 1;
+      log.info("Reusing settled rotation result for consumed token", {
+        ageMs: Date.now() - recentRotation.settledAt,
+      });
+      return recentRotation.result;
     }
 
     // Check if this token was rotated FROM another token that's still refreshing
@@ -190,6 +212,10 @@ export class RefreshQueue {
     
     if (result.type === "success" && result.refresh !== refreshToken) {
       this.tokenRotationMap.set(refreshToken, result.refresh);
+      this.recentRotations.set(refreshToken, {
+        result,
+        settledAt: Date.now(),
+      });
       this.metrics.rotated += 1;
       log.info("Token rotated during refresh", {
         oldTokenSuffix: refreshToken.slice(-6),
@@ -276,6 +302,12 @@ export class RefreshQueue {
       this.pending.delete(token);
     }
     this.metrics.pending = this.pending.size;
+
+    for (const [token, entry] of this.recentRotations.entries()) {
+      if (now - entry.settledAt > this.maxEntryAgeMs) {
+        this.recentRotations.delete(token);
+      }
+    }
   }
 
   /**
@@ -301,6 +333,7 @@ export class RefreshQueue {
   clear(): void {
     this.pending.clear();
     this.tokenRotationMap.clear();
+    this.recentRotations.clear();
     this.metrics = createInitialMetrics();
   }
 

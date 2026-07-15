@@ -253,13 +253,15 @@ describe("chaos/storage-faults — real fault injection", () => {
 		});
 
 		it("runCleanup flushes the pending debounced save before process exit", async () => {
-			// Spy on the real saveAccounts via the storage module so we can
-			// observe the flush without blocking on disk I/O through the
+			// Persistence saves through the storage transaction; spy on it so we
+			// can observe the flush without blocking on disk I/O through the
 			// AccountManager wrapper.
 			const storageModule = await import("../../lib/storage.js");
 			const saveSpy = vi
-				.spyOn(storageModule, "saveAccounts")
-				.mockResolvedValue(undefined);
+				.spyOn(storageModule, "withAccountStorageTransaction")
+				.mockImplementation(async (handler) =>
+					handler(null, async () => {}),
+				);
 
 			const now = Date.now();
 			const manager = new AccountManager(undefined, {
@@ -286,8 +288,10 @@ describe("chaos/storage-faults — real fault injection", () => {
 		it("multiple rotations inside the debounce window are coalesced into one flushed save", async () => {
 			const storageModule = await import("../../lib/storage.js");
 			const saveSpy = vi
-				.spyOn(storageModule, "saveAccounts")
-				.mockResolvedValue(undefined);
+				.spyOn(storageModule, "withAccountStorageTransaction")
+				.mockImplementation(async (handler) =>
+					handler(null, async () => {}),
+				);
 
 			const now = Date.now();
 			const manager = new AccountManager(undefined, {
@@ -314,7 +318,7 @@ describe("chaos/storage-faults — real fault injection", () => {
 			// of the cleanup queue (log drains, server closes) must still run.
 			const storageModule = await import("../../lib/storage.js");
 			const saveSpy = vi
-				.spyOn(storageModule, "saveAccounts")
+				.spyOn(storageModule, "withAccountStorageTransaction")
 				.mockRejectedValueOnce(new Error("simulated disk failure"));
 
 			const now = Date.now();

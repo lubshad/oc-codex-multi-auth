@@ -115,6 +115,13 @@ export interface AccountMetadataV3 {
 	expiresAt?: number;
 	/** OAuth scope string granted when this token set was minted. */
 	oauthScope?: string;
+	/**
+	 * When the refresh token on this record was last rotated (ms since epoch).
+	 * Refresh tokens are single-use, so a concurrent process must be able to
+	 * tell which of two differing tokens is the live one before persisting —
+	 * see AccountPersistence.saveToDisk's credential merge.
+	 */
+	tokenRotatedAt?: number;
 	enabled?: boolean;
 	addedAt: number;
 	lastUsed: number;

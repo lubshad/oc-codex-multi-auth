@@ -745,6 +745,29 @@ function sanitizeReasoningSummary(
 }
 
 /**
+ * Re-clamp a carried-over reasoning config when a request is retargeted to a
+ * different model (unsupported-model fallback in index.ts). The fallback
+ * rewrite reuses the already-transformed body, so an effort that was valid on
+ * the original model can be invalid on the target — `max` arrived with
+ * GPT-5.6, so a sol -> gpt-5.5 hop must not put it on the wire. Only `effort`
+ * is re-derived through getReasoningConfig's family clamps; every other
+ * reasoning field carries over unchanged.
+ */
+export function clampReasoningForModel(
+	reasoning: Partial<ReasoningConfig> | undefined,
+	modelName: string,
+): Partial<ReasoningConfig> | undefined {
+	if (!reasoning?.effort) return reasoning;
+	const clamped = getReasoningConfig(modelName, {
+		reasoningEffort: reasoning.effort,
+		...(reasoning.summary ? { reasoningSummary: reasoning.summary } : {}),
+	});
+	return clamped.effort === reasoning.effort
+		? reasoning
+		: { ...reasoning, effort: clamped.effort };
+}
+
+/**
  * Filter input array for stateless Codex API (store: false)
  *
  * Two transformations needed:

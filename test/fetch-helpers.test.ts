@@ -1204,6 +1204,28 @@ describe('Fetch Helpers Module', () => {
 			expect(rateLimit?.retryAfterMs).toBe(10000);
 		});
 
+		it('caps oversized retry-after headers at the same 5-min bound as the body path', async () => {
+			// The body retry_after_ms path is explicitly capped; the header
+			// paths mirror the same semantics, so a bogus 2h retry-after must
+			// not freeze an account past the cap (quota reset-at headers stay
+			// uncapped — windows legitimately reset hours out).
+			const headerSeconds = new Headers({ 'retry-after': '7200' });
+			const secondsResponse = new Response(
+				JSON.stringify({ error: { message: 'rate limited' } }),
+				{ status: 429, headers: headerSeconds },
+			);
+			const { rateLimit: secondsLimit } = await handleErrorResponse(secondsResponse);
+			expect(secondsLimit?.retryAfterMs).toBe(5 * 60 * 1000);
+
+			const headerMs = new Headers({ 'retry-after-ms': '99999999999' });
+			const msResponse = new Response(
+				JSON.stringify({ error: { message: 'rate limited' } }),
+				{ status: 429, headers: headerMs },
+			);
+			const { rateLimit: msLimit } = await handleErrorResponse(msResponse);
+			expect(msLimit?.retryAfterMs).toBe(5 * 60 * 1000);
+		});
+
 		it('parses x-ratelimit-reset header (unix timestamp)', async () => {
 			const futureTimestamp = Math.floor(Date.now() / 1000) + 60;
 			const headers = new Headers({ 'x-ratelimit-reset': String(futureTimestamp) });

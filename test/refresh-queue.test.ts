@@ -136,21 +136,46 @@ describe("RefreshQueue", () => {
     });
 
     it("should allow new refresh after previous completes", async () => {
+      // Non-rotating result: the server kept the same refresh token, so a
+      // second refresh with it is a genuinely new operation. (A ROTATED
+      // token instead hits the settled-rotation reuse path — see below.)
       const mockResult = {
         type: "success" as const,
         access: "access",
-        refresh: "refresh",
+        refresh: "token",
         expires: Date.now() + 3600000,
       };
       vi.mocked(authModule.refreshAccessToken).mockResolvedValue(mockResult);
 
       const queue = new RefreshQueue();
-      
+
       await queue.refresh("token");
       expect(authModule.refreshAccessToken).toHaveBeenCalledTimes(1);
-      
+
       await queue.refresh("token");
       expect(authModule.refreshAccessToken).toHaveBeenCalledTimes(2);
+    });
+
+    it("should reuse the settled rotation result for a consumed token", async () => {
+      // The pre-rotation token is single-use: once a refresh rotated it, a
+      // late caller still holding it must get the settled result rather
+      // than burning the consumed token on a doomed network refresh.
+      const rotatedResult = {
+        type: "success" as const,
+        access: "access",
+        refresh: "rotated-token",
+        expires: Date.now() + 3600000,
+      };
+      vi.mocked(authModule.refreshAccessToken).mockResolvedValue(rotatedResult);
+
+      const queue = new RefreshQueue();
+
+      const first = await queue.refresh("token");
+      const second = await queue.refresh("token");
+
+      expect(first).toEqual(rotatedResult);
+      expect(second).toEqual(rotatedResult);
+      expect(authModule.refreshAccessToken).toHaveBeenCalledTimes(1);
     });
   });
 

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
 	applyFastSessionDefaults,
+	clampReasoningForModel,
 	getModelConfig,
 	getReasoningConfig,
 } from '../lib/request/request-transformer.js';
@@ -182,5 +183,35 @@ describe('Configuration Parsing', () => {
 			const gpt5Reasoning = getReasoningConfig('gpt-5', {});
 			expect(gpt5Reasoning.effort).toBe('high');
 		});
+	});
+});
+
+describe('clampReasoningForModel (unsupported-model fallback)', () => {
+	it('degrades a 5.6-only max effort when the fallback target is pre-5.6', () => {
+		// gpt-5.6-sol-max falling back to gpt-5.5 must not put `max` on the
+		// wire — gpt-5.5 tops out at xhigh and would reject the request.
+		expect(
+			clampReasoningForModel({ effort: 'max', summary: 'auto' }, 'gpt-5.5'),
+		).toEqual({ effort: 'xhigh', summary: 'auto' });
+	});
+
+	it('keeps max on a 5.6-to-5.6 fallback hop', () => {
+		const reasoning = { effort: 'max' as const, summary: 'auto' as const };
+		expect(clampReasoningForModel(reasoning, 'gpt-5.6-terra')).toBe(reasoning);
+	});
+
+	it('returns the input unchanged when no effort is carried', () => {
+		expect(clampReasoningForModel(undefined, 'gpt-5.5')).toBeUndefined();
+		const summaryOnly = { summary: 'auto' as const };
+		expect(clampReasoningForModel(summaryOnly, 'gpt-5.5')).toBe(summaryOnly);
+	});
+
+	it('preserves other reasoning fields while re-deriving effort', () => {
+		const clamped = clampReasoningForModel(
+			{ effort: 'max', summary: 'detailed' },
+			'gpt-5.4',
+		);
+		expect(clamped?.effort).toBe('xhigh');
+		expect(clamped?.summary).toBe('detailed');
 	});
 });

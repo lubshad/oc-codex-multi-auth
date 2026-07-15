@@ -163,6 +163,7 @@ import {
 } from "./lib/error-sentinels.js";
 import {
 	applyFastSessionDefaults,
+	clampReasoningForModel,
 	upsertBackendModelIdentityMessage,
 } from "./lib/request/request-transformer.js";
 import {
@@ -2450,6 +2451,21 @@ while (attempted.size < Math.max(1, accountCount)) {
 						}
 					}
 					transformedBody = fallbackBody as RequestBody;
+				}
+
+				// The carried-over reasoning effort was clamped for the ORIGINAL
+				// model; the fallback target may not accept it (`max` exists only
+				// on the 5.6 tiers, so a sol -> gpt-5.5 hop must degrade it or the
+				// graceful fallback turns into a hard 400).
+				const clampedReasoning = clampReasoningForModel(
+					transformedBody.reasoning,
+					model,
+				);
+				if (clampedReasoning !== transformedBody.reasoning) {
+					transformedBody = {
+						...transformedBody,
+						reasoning: clampedReasoning,
+					};
 				}
 
 				// Shape for whichever model this attempt targets. A 5.6 -> 5.5 fallback

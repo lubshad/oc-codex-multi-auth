@@ -8,6 +8,10 @@ import type { CompactQuotaLimit } from "./tui-status.js";
 export const TUI_QUOTA_CACHE_VERSION = 1;
 export const TUI_QUOTA_CACHE_FILE = "oc-codex-multi-auth-tui-quota.json";
 const TUI_QUOTA_CACHE_WRITE_SKIP_MS = 500;
+// A snapshot older than one TUI refresh interval is due for a live re-fetch:
+// the shared cache is only pushed while requests flow, so after an idle gap it
+// describes quota windows that may have reset server-side long ago.
+export const TUI_QUOTA_SNAPSHOT_FRESH_MS = 5 * 60 * 1000;
 
 export type TuiQuotaSource = "headers" | "usage";
 
@@ -296,6 +300,19 @@ export function sanitizeTuiQuotaSnapshot(
 	return limits.length === snapshot.limits.length
 		? snapshot
 		: { ...snapshot, limits };
+}
+
+/**
+ * Whether a snapshot is recent enough to render as current (`stale=false`)
+ * without re-querying `/wham/usage`. A future `fetchedAt` (clock skew between
+ * the writing and reading process) counts as fresh rather than poisoning the
+ * cache until the skew elapses.
+ */
+export function isFreshTuiQuotaSnapshot(
+	snapshot: Pick<TuiQuotaSnapshot, "fetchedAt">,
+	now: number = Date.now(),
+): boolean {
+	return now - snapshot.fetchedAt < TUI_QUOTA_SNAPSHOT_FRESH_MS;
 }
 
 export async function readTuiQuotaSnapshot(

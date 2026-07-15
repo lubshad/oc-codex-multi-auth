@@ -44,14 +44,16 @@ export function shouldRefreshProactively(
 	account: ManagedAccount,
 	bufferMs: number = DEFAULT_PROACTIVE_BUFFER_MS,
 ): boolean {
+	// No access token - definitely needs refresh. Checked BEFORE the expiry
+	// guard: an account with a refresh token but neither access token nor
+	// expiry would otherwise never refresh proactively.
+	if (!account.access) {
+		return true;
+	}
+
 	// No expiry set - can't determine if refresh is needed
 	if (account.expires === undefined) {
 		return false;
-	}
-
-	// No access token - definitely needs refresh
-	if (!account.access) {
-		return true;
 	}
 
 	// Clamp buffer to minimum

@@ -10,7 +10,12 @@
 import { createLogger } from "../logger.js";
 import { MODEL_FAMILIES, type ModelFamily } from "../prompts/codex.js";
 import { registerCleanup, unregisterCleanup } from "../shutdown.js";
-import { saveAccounts, type AccountStorageV3 } from "../storage.js";
+import {
+	withAccountStorageTransaction,
+	type AccountMetadataV3,
+	type AccountStorageV3,
+} from "../storage.js";
+import { getWorkspaceIdentityKey } from "../storage/identity.js";
 import { clampNonNegativeInt } from "./rate-limits.js";
 import type { AccountState } from "./state.js";
 
@@ -52,6 +57,7 @@ export class AccountPersistence {
 				accessToken: account.access,
 				expiresAt: account.expires,
 				oauthScope: account.oauthScope,
+				tokenRotatedAt: account.tokenRotatedAt,
 				enabled: account.enabled === false ? false : undefined,
 				addedAt: account.addedAt,
 				lastUsed: account.lastUsed,
@@ -67,7 +73,80 @@ export class AccountPersistence {
 			activeIndexByFamily,
 		};
 
-		await saveAccounts(storage);
+		// Read-modify-write under the storage lock. A plain saveAccounts()
+		// would blind-overwrite the file from this process's snapshot: fine
+		// for the documented lost-write set (rotation/health/rate-limit
+		// state), fatal for credentials — refresh tokens are single-use, so
+		// clobbering another process's freshly-rotated token kills the
+		// account permanently. Adopt any newer on-disk credentials before
+		// persisting.
+		await withAccountStorageTransaction(async (current, persist) => {
+			if (current) {
+				this.adoptNewerDiskCredentials(storage, current);
+			}
+			await persist(storage);
+		});
+	}
+
+	/**
+	 * Merges credentials from `disk` into `outgoing` (and the live in-memory
+	 * accounts) for every account whose on-disk refresh token differs and
+	 * carries a NEWER `tokenRotatedAt` stamp — i.e. another process rotated
+	 * the token after this process loaded its snapshot. Records without a
+	 * stamp (pre-upgrade files) keep this process's value, matching the old
+	 * behavior. Only credential fields are merged; rotation/health/rate-limit
+	 * state intentionally stays last-writer-wins.
+	 */
+	private adoptNewerDiskCredentials(
+		outgoing: AccountStorageV3,
+		disk: AccountStorageV3,
+	): void {
+		const diskByIdentity = new Map<string, AccountMetadataV3>();
+		for (const record of disk.accounts) {
+			diskByIdentity.set(getWorkspaceIdentityKey(record), record);
+		}
+
+		for (let i = 0; i < outgoing.accounts.length; i++) {
+			const mine = outgoing.accounts[i];
+			if (!mine) continue;
+			const theirs = diskByIdentity.get(getWorkspaceIdentityKey(mine));
+			if (!theirs?.refreshToken || theirs.refreshToken === mine.refreshToken) {
+				continue;
+			}
+			if ((theirs.tokenRotatedAt ?? 0) <= (mine.tokenRotatedAt ?? 0)) {
+				continue;
+			}
+
+			const mineIdentity = getWorkspaceIdentityKey(mine);
+			mine.refreshToken = theirs.refreshToken;
+			mine.accessToken = theirs.accessToken;
+			mine.expiresAt = theirs.expiresAt;
+			mine.oauthScope = theirs.oauthScope ?? mine.oauthScope;
+			mine.tokenRotatedAt = theirs.tokenRotatedAt;
+
+			// Mirror into live state so this process stops refreshing with the
+			// consumed token. Matched by identity key rather than array index:
+			// outgoing is currently built from state.accounts in order, but the
+			// mirror must not silently target the wrong account if that ever
+			// changes. The identity key is computed from `mine` BEFORE the
+			// credential adoption above, since the token participates in the
+			// key for records without workspace ids.
+			const live = this.state.accounts.find(
+				(candidate) => getWorkspaceIdentityKey(candidate) === mineIdentity,
+			);
+			if (live) {
+				live.refreshToken = theirs.refreshToken;
+				live.access = theirs.accessToken;
+				live.expires = theirs.expiresAt;
+				if (theirs.oauthScope) live.oauthScope = theirs.oauthScope;
+				live.tokenRotatedAt = theirs.tokenRotatedAt;
+			}
+
+			log.info("Adopted newer on-disk credentials during save", {
+				accountIndex: i,
+				rotatedAt: theirs.tokenRotatedAt,
+			});
+		}
 	}
 
 	saveToDiskDebounced(delayMs = 500): void {

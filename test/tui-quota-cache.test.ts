@@ -7,9 +7,11 @@ import {
 	clearTuiQuotaSnapshot,
 	createTuiQuotaSnapshot,
 	getTuiQuotaCachePath,
+	isFreshTuiQuotaSnapshot,
 	parseTuiQuotaSnapshotFromHeaders,
 	readTuiQuotaSnapshot,
 	writeTuiQuotaSnapshot,
+	TUI_QUOTA_SNAPSHOT_FRESH_MS,
 } from "../lib/tui-quota-cache.js";
 
 describe("TUI quota cache", () => {
@@ -111,6 +113,40 @@ describe("TUI quota cache", () => {
 		} finally {
 			await rm(dir, { recursive: true, force: true });
 		}
+	});
+});
+
+describe("snapshot freshness", () => {
+	const now = 1_752_000_000_000;
+
+	it("trusts a snapshot within the freshness horizon", () => {
+		expect(
+			isFreshTuiQuotaSnapshot(
+				{ fetchedAt: now - TUI_QUOTA_SNAPSHOT_FRESH_MS + 1 },
+				now,
+			),
+		).toBe(true);
+	});
+
+	it("rejects a snapshot at or beyond the horizon so an idle TUI re-fetches", () => {
+		// The shared cache is only pushed while requests flow; after an idle
+		// gap the windows it describes may have reset server-side, so an old
+		// snapshot must not short-circuit the live /wham/usage read.
+		expect(
+			isFreshTuiQuotaSnapshot(
+				{ fetchedAt: now - TUI_QUOTA_SNAPSHOT_FRESH_MS },
+				now,
+			),
+		).toBe(false);
+		expect(
+			isFreshTuiQuotaSnapshot({ fetchedAt: now - 6 * 60 * 60 * 1000 }, now),
+		).toBe(false);
+	});
+
+	it("treats a clock-skewed future timestamp as fresh", () => {
+		expect(isFreshTuiQuotaSnapshot({ fetchedAt: now + 60_000 }, now)).toBe(
+			true,
+		);
 	});
 });
 

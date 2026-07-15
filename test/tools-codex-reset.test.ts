@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { createRedeemRequestId } from "../lib/codex-reset.js";
 import { createCodexResetTool } from "../lib/tools/codex-reset.js";
 import type { ToolContext } from "../lib/tools/index.js";
 
@@ -192,6 +193,61 @@ describe("codex-reset tool", () => {
 		expect(parsed.redeemed).toBe(true);
 		expect(parsed.usageError).toContain("network down");
 		expect(parsed.error).toBeUndefined();
+	});
+
+	it("sends a stable idempotency key derived from the credit id", async () => {
+		// A retry of the same logical redemption must present the same
+		// redeem_request_id, or the backend cannot dedupe it and a lost
+		// response could turn into a second spent credit.
+		const fetchMock = mockCodexFetch();
+		const execute = createCodexResetTool(buildCtx()).execute as ToolExecute;
+
+		await execute({ action: "consume", confirm: true });
+		await execute({ action: "consume", confirm: true });
+
+		const consumeCalls = callsTo(fetchMock, CONSUME_URL);
+		expect(consumeCalls).toHaveLength(2);
+		const keys = consumeCalls.map(
+			(call) =>
+				(
+					JSON.parse(String((call[1] as RequestInit).body)) as {
+						redeem_request_id: string;
+					}
+				).redeem_request_id,
+		);
+		expect(keys[0]).toBe(createRedeemRequestId("RateLimitResetCredit_1"));
+		expect(keys[1]).toBe(keys[0]);
+	});
+
+	it("reports an unknown outcome when the consume request itself fails", async () => {
+		// The POST may have reached the backend before the connection died, so
+		// the tool must not claim redeemed=false — that would send the user to
+		// spend a second credit for a redemption that may already be done.
+		vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+			const url = String(input);
+			if (url === CREDITS_URL) return jsonResponse(creditsPayload);
+			if (url === CONSUME_URL) throw new TypeError("socket hang up");
+			if (url === USAGE_URL) return jsonResponse(usagePayload);
+			throw new Error(`unexpected fetch: ${url}`);
+		});
+		const execute = createCodexResetTool(buildCtx()).execute as ToolExecute;
+
+		const parsed = JSON.parse(
+			await execute({ action: "consume", confirm: true, format: "json" }),
+		) as {
+			redeemed: boolean | null;
+			reason?: string;
+			error?: string;
+			message?: string;
+		};
+		expect(parsed.redeemed).toBeNull();
+		expect(parsed.reason).toBe("consume-failed");
+		expect(parsed.error).toContain("socket hang up");
+		expect(parsed.message).toContain("RateLimitResetCredit_1");
+
+		const text = await execute({ action: "consume", confirm: true });
+		expect(text).toContain("redemption outcome unknown");
+		expect(text).toContain("RateLimitResetCredit_1");
 	});
 
 	it("does not read usage before deciding whether to redeem", async () => {

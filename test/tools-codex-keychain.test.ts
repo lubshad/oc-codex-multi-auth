@@ -396,4 +396,55 @@ describe("codex-keychain rollback (F1 MEDIUM: confirm-flag clobber gate)", () =>
 		) as AccountStorageV3;
 		expect(active.accounts[0]!.accountId).toBe("from-backup");
 	});
+
+	it("aborts rollback when checking for an existing accounts file fails with a non-ENOENT error", async () => {
+		await seedBackup("from-backup");
+		// No seedCurrentJson call — but fs.access is made to fail with an
+		// error OTHER than ENOENT (e.g. a permission problem), so the tool
+		// cannot tell whether a live file exists. It must abort rather than
+		// assume "absent" and proceed to overwrite whatever is (or isn't)
+		// there.
+		const { promises: fsp } = await import("node:fs");
+		const { vi } = await import("vitest");
+		const accessSpy = vi
+			.spyOn(fsp, "access")
+			.mockImplementationOnce(async () => {
+				throw Object.assign(new Error("simulated EACCES"), {
+					code: "EACCES",
+				});
+			});
+
+		try {
+			const t = createCodexKeychainTool(buildCtx());
+			const out = (await t.execute(
+				{ command: "rollback" },
+				{} as never,
+			)) as string;
+			expect(out).toMatch(/failed to check for an existing accounts file/i);
+			expect(out).toContain(storagePath);
+			expect(out).toMatch(/Aborted/);
+		} finally {
+			accessSpy.mockRestore();
+		}
+
+		// The backup was never promoted -- the rename must not have run.
+		expect(existsSync(storagePath)).toBe(false);
+	});
+
+	it("warns instead of failing when the keychain entry cannot be confirmed deleted after rollback", async () => {
+		await seedBackup("from-backup");
+		// No seedCurrentJson call and nothing was ever written to the mock
+		// keychain backend for this project key, so deleteFromKeychain's
+		// underlying backend.delete() naturally returns false (nothing to
+		// delete). The rollback must still succeed but surface a warning
+		// about the possibly-stale keychain copy.
+		const t = createCodexKeychainTool(buildCtx());
+		const out = (await t.execute(
+			{ command: "rollback" },
+			{} as never,
+		)) as string;
+
+		expect(out).toMatch(/Restored/);
+		expect(out).toMatch(/could not confirm the OS-keychain entry was deleted/i);
+	});
 });

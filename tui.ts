@@ -28,6 +28,7 @@ import {
 import {
 	createTuiQuotaSnapshot,
 	getTuiQuotaCachePath,
+	isFreshTuiQuotaSnapshot,
 	isTuiQuotaSnapshot,
 	readTuiQuotaSnapshot,
 	writeTuiQuotaSnapshot,
@@ -191,12 +192,22 @@ async function refreshQuotaStatusInner(
 		if (!selection) return { type: "missing" };
 		const fingerprint = createUsageAccountFingerprint(selection.account);
 		const shared = await readSharedQuotaStatus(api, fingerprint);
-		if (shared) {
+		const now = Date.now();
+		// A shared snapshot only proves freshness while requests flow: the
+		// request path pushes it per response, but during an idle gap nothing
+		// rewrites it and the quota windows it describes may have reset
+		// server-side. Trust it as current within one refresh interval;
+		// otherwise fall through to a live /wham/usage read and keep the
+		// snapshot only as a stale fallback.
+		if (shared && isFreshTuiQuotaSnapshot(shared, now)) {
 			writeStoredQuotaStatus(api, shared);
 			return toCompactQuotaStatus(shared, false);
 		}
-		const cached = readStoredQuotaStatus(api, fingerprint);
-		const now = Date.now();
+		const stored = readStoredQuotaStatus(api, fingerprint);
+		const cached =
+			shared && (!stored || shared.fetchedAt >= stored.fetchedAt)
+				? shared
+				: stored;
 
 		try {
 			const credentials = await ensureCodexUsageAccessToken({
@@ -336,7 +347,10 @@ function createPromptStatus(
 			const revision = getQuotaSnapshotRevision(shared);
 			if (!revision || revision === currentSnapshotRevision) return;
 			writeStoredQuotaStatus(api, shared);
-			applyQuota(toCompactQuotaStatus(shared, false));
+			// A changed revision is usually a fresh push from the request path,
+			// but on TUI startup this poll can see an old snapshot before the
+			// initial live fetch lands — render that honestly as stale.
+			applyQuota(toCompactQuotaStatus(shared, !isFreshTuiQuotaSnapshot(shared)));
 		})().finally(() => {
 			cachePollInFlight = false;
 		});

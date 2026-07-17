@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.9.1] - 2026-07-18
+
+### Fixed
+- **`gpt-5.6-sol` still rejected through the plugin after the 6.8.2 identity fix** (`model_not_supported_with_chatgpt_account` on every pooled account while terra/luna pass, and sol works in the Codex TUI and in plain opencode on the same accounts): the remaining difference was *who the plugin claims to be*, not the request version or payload. The upstream model catalog gates sol, terra, and luna identically (`minimal_client_version: 0.144.0`, `use_responses_lite: true`), so no version- or shape-level cause can produce a sol-only failure; and plain opencode's native ChatGPT-Codex path does not imitate the Codex CLI at all — it sends `originator: opencode` with an `opencode/<version> (<platform> <release>; <arch>)` `User-Agent` to the same `/backend-api/codex/responses` endpoint. The backend evaluates sol entitlement per originator, and for some account cohorts the `codex_cli_rs` claim from a non-Codex client fails that check while the host identity passes. The GPT-5.6 (responses-lite) tiers therefore now present the host (opencode) identity by default — the identity affected accounts are proven to pass sol with — while every other model keeps the Codex CLI identity from 6.8.2. Verified live on a sol-entitled account: both identities return 200 there, so accounts where `codex_cli_rs` already works are unaffected. `CODEX_AUTH_CLIENT_IDENTITY=codex|opencode` (alias `host`) forces one identity for all models. (#196, #201)
+- The advertised opencode version self-syncs with the real host build: when the host runtime injects its own `opencode/<version>` `User-Agent` on the incoming request, that version is reused in the emitted identity instead of a baked-in constant; `CODEX_AUTH_HOST_VERSION` overrides both. (#201)
+- `CODEX_AUTH_CLIENT_VERSION` and `CODEX_AUTH_HOST_VERSION` values are sanitized to safe product-token characters (whitespace and junk stripped, empty results fall back to the default), so a badly quoted environment value can no longer split the `User-Agent` product token and silently break the version the backend parses. (#201)
+
 ## [6.9.0] - 2026-07-17
 
 ### Added

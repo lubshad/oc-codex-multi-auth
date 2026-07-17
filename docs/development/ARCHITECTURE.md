@@ -1,6 +1,6 @@
 # Architecture
 
-Runtime architecture for the `oc-codex-multi-auth` OpenCode plugin, installer, ChatGPT Plus/Pro OAuth flow, Codex/GPT-5 request bridge, multi-account rotation, `codex-*` tool registry, TUI quota status plugin, and local storage model.
+Runtime architecture for the `oc-codex-multi-auth` OpenCode plugin, installer, ChatGPT Plus/Pro OAuth flow, Codex/GPT-5 request bridge (including GPT-5.6 responses-lite), multi-account rotation, `codex-*` tool registry, TUI quota status plugin, and local storage model.
 
 > Reflects the codebase as of the current `main` branch. Historical audit section markers are retained in the docs tree for traceability, but this file is the current maintainer architecture source.
 
@@ -21,17 +21,20 @@ Runtime architecture for the `oc-codex-multi-auth` OpenCode plugin, installer, C
 ## System Diagram
 
 ```text
-Install / refresh
+Install / refresh / standalone CLI
   |
-  | npx -y oc-codex-multi-auth@latest [--modern|--full|--legacy]
+  | npx -y oc-codex-multi-auth@latest
+  |   default compact modern | --full | --legacy
+  |   [--dry-run] [--no-cache-clear]
+  | standalone: doctor | status | list | limits | dashboard | health | diag | warm
   v
 scripts/install-oc-codex-multi-auth.js
   |- delegates to scripts/install-oc-codex-multi-auth-core.js
   |- writes ~/.config/opencode/opencode.json
   |- writes ~/.config/opencode/tui.json
-  |- merges config/opencode-modern.json or config/opencode-legacy.json
+  |- merges config/opencode-modern.json and/or config/opencode-legacy.json
   |- normalizes old package/plugin entries
-  |- clears OpenCode plugin cache
+  |- clears OpenCode plugin cache (unless --no-cache-clear)
 
 OpenCode runtime
   |
@@ -57,7 +60,11 @@ lib/request/fetch-helpers.ts + lib/request/request-transformer.ts
   |- native mode: preserve host payload shape
   |- legacy mode: apply compatibility rewrites
   |- force store:false and include reasoning.encrypted_content
-  |- select/refresh account, attach OAuth headers
+  |- GPT-5.6: responses-lite reshape + opencode client identity
+  |- other models: codex_cli_rs client identity (default)
+  |- resolve modelAccountPools preferred accounts
+  |- select/refresh account (hybrid health scoring)
+  |- attach OAuth headers
   v
 ChatGPT-backed Codex endpoint
   |
@@ -66,6 +73,7 @@ lib/request/response-handler.ts
   |- SSE parsing
   |- error mapping
   |- quota/rate-limit/header extraction
+  |- empty-response retries
 
 OpenCode TUI runtime
   |
@@ -82,16 +90,16 @@ tui.ts
 
 | Subsystem | Key files | Responsibility |
 | --- | --- | --- |
-| Installer CLI | `scripts/install-oc-codex-multi-auth.js`, `scripts/install-oc-codex-multi-auth-core.js` | npm bin, config merge, cache cleanup, modern/full/legacy catalog selection, TUI plugin enablement |
+| Installer CLI | `scripts/install-oc-codex-multi-auth.js`, `scripts/install-oc-codex-multi-auth-core.js` | npm bin; config merge; cache cleanup; modern/full/legacy catalog selection; standalone doctor/status/list/limits/dashboard/health/diag/warm; TUI plugin enablement |
 | OpenCode plugin entry | `index.ts` | auth loader, runtime wiring, custom fetch pipeline, account manager lifecycle, `ToolContext`, OpenCode plugin export |
 | TUI plugin entry | `tui.ts`, `lib/tui-status.ts`, `lib/tui-quota-cache.ts`, `lib/codex-usage.ts` | prompt quota status, account-aware quota snapshots, usage refresh, details rendering |
 | Auth flow | `lib/auth/auth.ts`, `lib/auth/server.ts`, `lib/auth/browser.ts`, `lib/auth/device-code.ts`, `lib/auth/login-runner.ts`, `lib/auth/scopes.ts` | PKCE OAuth, callback server, device/manual login, workspace/account selection, scope validation |
-| Account manager | `lib/accounts.ts`, `lib/accounts/` | account state facade, persistence, rotation, recovery, rate-limit tracking, workspace identity preservation |
+| Account manager | `lib/accounts.ts`, `lib/accounts/` | account state facade, persistence, rotation, recovery, rate-limit tracking, workspace identity preservation, warm |
 | Storage | `lib/storage.ts`, `lib/storage/` | V3 JSON storage, atomic writes, migrations, per-project paths, backups, import/export, keychain opt-in, flagged accounts |
-| Request bridge | `lib/request/fetch-helpers.ts`, `lib/request/request-transformer.ts`, `lib/request/response-handler.ts`, `lib/request/retry-budget.ts`, `lib/request/rate-limit-backoff.ts` | URL/body/header shaping, Codex invariants, SSE conversion, retry budgets, backoff, error mapping |
+| Request bridge | `lib/request/fetch-helpers.ts`, `lib/request/request-transformer.ts`, `lib/request/response-handler.ts`, `lib/request/retry-budget.ts`, `lib/request/rate-limit-backoff.ts`, `lib/request/helpers/` | URL/body/header shaping, Codex invariants, responses-lite, client identity, SSE conversion, retry budgets, backoff, error mapping |
 | Model/prompt mapping | `lib/prompts/codex.ts`, `lib/prompts/opencode-codex.ts`, `lib/prompts/codex-opencode-bridge.ts`, `lib/request/helpers/model-map.ts` | model-family detection, Codex instructions cache, OpenCode prompt adaptation, fallback aliases |
 | Tool registry | `lib/tools/index.ts`, `lib/tools/codex-*.ts` | 24 OpenCode tools for setup, account switching, status, health, quota resets, diagnostics, backup, keychain, and recovery |
-| Runtime support | `lib/runtime.ts`, `lib/circuit-breaker.ts`, `lib/proactive-refresh.ts`, `lib/parallel-probe.ts`, `lib/recovery/`, `lib/shutdown.ts` | pure runtime helpers, failure isolation, refresh scheduling, health probing, session recovery, cleanup |
+| Runtime support | `lib/runtime.ts`, `lib/circuit-breaker.ts`, `lib/proactive-refresh.ts`, `lib/parallel-probe.ts`, `lib/recovery/`, `lib/rotation.ts`, `lib/shutdown.ts` | pure runtime helpers, failure isolation, refresh scheduling, health probing, hybrid selection scoring, session recovery, cleanup |
 | UI helpers | `lib/ui/` | terminal formatting, auth menu, select/confirm prompts, theme/color handling, beginner checklist |
 | Config templates | `config/opencode-modern.json`, `config/opencode-legacy.json`, `config/minimal-opencode.json`, `config/README.md` | copy-paste OpenCode provider templates and model catalog guidance |
 | Tests | `test/` | Vitest suites for auth, request transforms, storage, rotation, tools, TUI quota, installer, docs parity, and release regressions |
@@ -136,7 +144,7 @@ docs/
 High-level provider fetch flow:
 
 1. Parse OpenCode request URL and body.
-2. Resolve plugin config from defaults, `~/.opencode/openai-codex-auth-config.json`, and environment overrides.
+2. Resolve plugin config from defaults, `~/.opencode/openai-codex-auth-config.json`, and environment overrides (boolean env truthy only for `"1"`).
 3. Choose request transform mode:
    - `native` keeps OpenCode payloads unchanged except required Codex invariants.
    - `legacy` fetches Codex/OpenCode prompts and applies compatibility rewrites.
@@ -144,12 +152,16 @@ High-level provider fetch flow:
    - `stream: true`
    - `store: false`
    - `include: ["reasoning.encrypted_content"]` or equivalent inclusion
-5. Normalize model aliases and fallback candidates.
-6. Resolve account/workspace selection with health, cooldown, token bucket, and explicit `CODEX_AUTH_ACCOUNT_ID` constraints.
-7. Refresh tokens through the queued refresh path when needed.
-8. Attach OAuth/Codex headers and forward the request.
-9. Parse SSE responses, quota headers, retryable errors, and unsupported-model details.
-10. Update runtime metrics, account health, TUI quota cache, and persisted storage.
+5. Normalize model aliases and fallback candidates (including GPT-5.6 Sol/Terra/Luna tiers).
+6. For GPT-5.6 models, apply the responses-lite reshape (`lib/request/helpers/responses-lite.ts`): tools move into `input` as `additional_tools`, instructions become a developer message, top-level `tools`/`instructions` are cleared for lite shape, image `detail` is stripped, and `x-openai-internal-codex-responses-lite: true` is set.
+7. Resolve client identity (`lib/request/helpers/client-identity.ts`): GPT-5.6 defaults to `originator: opencode`; other models default to `codex_cli_rs`. Override with `CODEX_AUTH_CLIENT_IDENTITY`.
+8. Resolve preferred accounts from `modelAccountPools` for the effective model; fall back to the general pool when the preferred pool is empty or unavailable.
+9. Resolve account/workspace selection with the configured `rotationStrategy` (default `hybrid` health scoring), cooldown, token bucket, and explicit `CODEX_AUTH_ACCOUNT_ID` constraints.
+10. Refresh tokens through the queued refresh path when needed.
+11. Attach OAuth/Codex headers and forward the request.
+12. Parse SSE responses, quota headers, retryable errors, empty responses, and unsupported-model details.
+13. Update runtime metrics, account health, circuit breaker state, TUI quota cache, and persisted storage.
+14. On recoverable failures, apply session recovery / auto-resume hooks when enabled.
 
 ---
 
@@ -164,6 +176,8 @@ Context is preserved through:
 - `reasoning.encrypted_content` returned by the backend and sent back on later turns
 
 Legacy mode exists for compatibility with older OpenCode/AI SDK payload behavior. It removes unsupported `item_reference` items and message IDs that cannot be looked up when `store: false` is active. Native mode is the default and preserves the host payload shape as much as possible.
+
+GPT-5.6 responses-lite is a separate body shape layered on top of the same stateless contract: tool definitions live in the input prefix rather than the top-level `tools` field.
 
 ---
 
@@ -188,6 +202,8 @@ Tool groups:
 | Diagnostics | `codex-health`, `codex-metrics`, `codex-doctor`, `codex-diag`, `codex-diff` |
 | Backup/secrets | `codex-export`, `codex-import`, `codex-keychain` |
 
+Standalone CLI mirrors a subset without loading the agent: `doctor`, `status`, `list`, `limits`, `dashboard`, `health`, `diag`, `warm`.
+
 ---
 
 ## Storage Model
@@ -208,7 +224,7 @@ Canonical OpenCode plugin state lives under `~/.opencode`, while OpenCode config
 
 Storage invariants:
 
-1. V1/V2 account files migrate into V3 on load/save paths.
+1. V1/V2 account files migrate into V3 on load/save paths (V2 surfaces a typed recovery error rather than silent discard).
 2. Per-project storage is enabled by default and keyed by detected project identity.
 3. JSON files are written atomically where supported.
 4. Optional keychain storage is opt-in via `CODEX_KEYCHAIN=1`.
@@ -232,17 +248,31 @@ The request path also writes quota snapshots from response headers, so the TUI c
 
 ## Model Catalog and Fallback Notes
 
-The default installer writes the modern OpenCode template:
+The default installer writes the modern OpenCode template (`config/opencode-modern.json`):
 
-- 9 base model families in the picker
-- 36 effective variants through OpenCode's variant selector
+- 12 base model families in the picker:
+  - `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`
+  - `gpt-5.5`, `gpt-5.5-fast`
+  - `gpt-5.4-mini`, `gpt-5.4-nano`
+  - `gpt-5.1-codex-max`, `gpt-5.1-codex`, `gpt-5.1-codex-mini`, `gpt-5.1`, `gpt-5-codex`
+- 53 effective variants through OpenCode's variant selector
 - `store: false`
 - `reasoning.encrypted_content`
 - large context/output metadata for supported model families
 
-`--full` adds explicit selector IDs for scripts, and `--legacy` writes the explicit-only template for older OpenCode versions.
+`--full` adds 53 explicit selector IDs for scripts. `--legacy` writes the explicit-only template (53 entries) for older OpenCode versions.
 
-Unsupported-model behavior is strict by default. Fallback can be enabled through config or environment variables, with GPT-5.5 rollout fallback handled separately where documented.
+Unsupported-model behavior is strict by default. Default auto-fallbacks still cover common entitlement gates for GPT-5.6 tiers → `gpt-5.5`, and for `gpt-5.5` / `gpt-5-codex` through the GPT-5.4 family. Full generic fallback can be enabled through config or environment variables.
+
+---
+
+## Rotation and Reliability
+
+- `rotationStrategy` default `hybrid`: stick while healthy, otherwise score-select (health + tokens + freshness). Alternatives: `sticky`, `round-robin`.
+- `lib/rotation.ts` owns hybrid health scoring; `lib/accounts/rotation.ts` wires it into account manager state.
+- Circuit breaker isolates repeated failures per account/path.
+- Empty-response retries use `emptyResponseMaxRetries` / `emptyResponseRetryDelayMs`.
+- Optional `parallelProbing` can probe account health concurrently (default off).
 
 ---
 
@@ -257,7 +287,8 @@ Unsupported-model behavior is strict by default. Fallback can be enabled through
 7. Account emails and tokens must not be exposed in diagnostic payloads or response headers.
 8. Keychain failures must not silently delete JSON credentials.
 9. Tool additions require a per-file factory, registry wiring, and focused test/docs updates.
-10. Docs, package metadata, GitHub About text, and plugin metadata should lead with OpenCode, ChatGPT OAuth, Codex/GPT-5 routing, multi-account rotation, account switching, health checks, diagnostics, and recovery tools.
+10. Boolean environment overrides are truthy only for the literal string `"1"`.
+11. Docs, package metadata, GitHub About text, and plugin metadata should lead with OpenCode, ChatGPT OAuth, Codex/GPT-5 routing, multi-account rotation, account switching, health checks, diagnostics, and recovery tools.
 
 ---
 

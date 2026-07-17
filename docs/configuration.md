@@ -1,6 +1,8 @@
 # Configuration Reference
 
-Complete reference for configuring `oc-codex-multi-auth`. Most of this is optional; the defaults work for most people.
+Complete reference for configuring `oc-codex-multi-auth` v6.9.1. Most of this is optional; the defaults work for most people.
+
+Boolean environment overrides are truthy only for the literal string `"1"`.
 
 ---
 
@@ -53,12 +55,30 @@ controls how much thinking the model does.
 
 The shipped config templates include 12 base model families and 53 shipped presets overall (53 modern variants or 53 legacy explicit entries). The default installer uses the compact modern template so the TUI model picker shows base OAuth model families and the separate variant picker selects the reasoning preset. Use `--full` to install explicit selector IDs too. `gpt-5.5-pro` is ChatGPT-only (not routed by this plugin), while `gpt-5.3-codex-spark` remains a manual add-on for entitled workspaces only.
 
+Base families:
+
+```text
+gpt-5.6-sol
+gpt-5.6-terra
+gpt-5.6-luna
+gpt-5.5
+gpt-5.5-fast
+gpt-5.4-mini
+gpt-5.4-nano
+gpt-5.1-codex-max
+gpt-5.1-codex
+gpt-5.1-codex-mini
+gpt-5.1
+gpt-5-codex
+```
+
 GPT-5.6 notes:
 - 5.6 models are served over the **responses-lite** path. Their catalog entry sets `use_responses_lite: true` and `tool_mode: "code_mode_only"`, so the plugin reshapes the request the way Codex does: tool definitions move into `input` as a leading `additional_tools` developer item, the Codex instructions follow as a developer message, top-level `instructions` is emptied, `tools` is omitted, `parallel_tool_calls` is forced off, image `detail` fields are stripped, and an `x-openai-internal-codex-responses-lite: true` header is sent. Pre-5.6 models keep the classic shape.
 - No 5.6 tier accepts `none` or `minimal`; both are raised to `low`.
 - `max` and `ultra` are new in 5.6. Requesting them on an older family steps down to `xhigh` (then `high` where xhigh is unsupported).
 - `ultra` is a client-side tier. Codex rewrites it to `max` before the request leaves the client, and the subagent orchestration that distinguishes ultra lives in the Codex client rather than the request body. This plugin is a proxy, so `-ultra` is accepted as an alias and sent on the wire as `max` — it does **not** spawn subagents.
 - 5.6 is opt-in: the legacy `gpt-5` alias and the plugin default still resolve to `gpt-5.5` / `gpt-5.4`. Because 5.6 shipped as a limited preview, an account without access falls back down the 5.6 tiers and then to `gpt-5.5` automatically — this works under the default `strict` policy, like the `gpt-5.5`/`gpt-5-codex` auto-fallbacks, and can be disabled with `CODEX_AUTH_DISABLE_GPT56_AUTO_FALLBACK=1`. The lite shape is applied per request attempt, so a request that falls back from `gpt-5.6-sol` to `gpt-5.5` is re-serialized into the classic shape and keeps its tools.
+- Client identity defaults to `originator: opencode` for GPT-5.6 tiers and `codex_cli_rs` for other models. Override with `CODEX_AUTH_CLIENT_IDENTITY=codex|opencode`.
 - Instructions for the 5.6 tiers come from the Codex model catalog — see "System instructions" below.
 
 ### System instructions
@@ -155,6 +175,7 @@ advanced settings go in `~/.opencode/openai-codex-auth-config.json`:
   "fastSession": false,
   "fastSessionStrategy": "hybrid",
   "fastSessionMaxInputItems": 30,
+  "rotationStrategy": "hybrid",
   "modelAccountPools": {
     "gpt-5.6-sol": ["org-example-account-id"]
   },
@@ -175,7 +196,18 @@ advanced settings go in `~/.opencode/openai-codex-auth-config.json`:
   "unsupportedCodexFallbackChain": {
     "gpt-5.4-pro": ["gpt-5.4"],
     "gpt-5-codex": ["gpt-5.2-codex"]
-  }
+  },
+  "parallelProbing": false,
+  "parallelProbingMaxConcurrency": 2,
+  "emptyResponseMaxRetries": 2,
+  "emptyResponseRetryDelayMs": 1000,
+  "pidOffsetEnabled": false,
+  "sessionRecovery": true,
+  "autoResume": true,
+  "tokenRefreshSkewMs": 60000,
+  "rateLimitToastDebounceMs": 60000,
+  "fetchTimeoutMs": 60000,
+  "streamStallTimeoutMs": 45000
 }
 ```
 
@@ -196,6 +228,7 @@ The sample above intentionally sets `"retryAllAccountsMaxRetries": 3` as a bound
 | `fastSession` | `false` | forces low-latency settings per request (`reasoningEffort=none/low`, `reasoningSummary=auto`, `textVerbosity=low`) |
 | `fastSessionStrategy` | `hybrid` | `hybrid` speeds simple turns and keeps full-depth for complex prompts; `always` forces fast mode every turn |
 | `fastSessionMaxInputItems` | `30` | max input items kept when fast mode is applied |
+| `rotationStrategy` | `hybrid` | account selection strategy: `hybrid` (stick while healthy, else score-select), `sticky` (drain one account first), or `round-robin` |
 | `modelAccountPools` | `{}` | optional map of effective model IDs to preferred stable account IDs; selection uses the configured pool while it has a healthy account, then falls back to the general account pool |
 | `retryProfile` | `balanced` | retry budget profile for request classes (`conservative`, `balanced`, `aggressive`) |
 | `retryBudgetOverrides` | `{}` | optional per-class budget overrides (`authRefresh`, `network`, `server`, `rateLimitShort`, `rateLimitGlobal`, `emptyResponse`) |
@@ -213,6 +246,11 @@ The sample above intentionally sets `"retryAllAccountsMaxRetries": 3` as a bound
 | `autoResume` | `true` | auto-resume after thinking block recovery |
 | `tokenRefreshSkewMs` | `60000` | refresh tokens this many ms before expiry |
 | `rateLimitToastDebounceMs` | `60000` | debounce rate limit toasts |
+| `parallelProbing` | `false` | enable concurrent account health probes |
+| `parallelProbingMaxConcurrency` | `2` | max concurrent probes when parallel probing is enabled (1–5) |
+| `emptyResponseMaxRetries` | `2` | retries after an empty SSE/response body |
+| `emptyResponseRetryDelayMs` | `1000` | delay in ms between empty-response retries |
+| `pidOffsetEnabled` | `false` | add a small PID-based offset to hybrid selection scores (helps multi-process load spread) |
 | `fetchTimeoutMs` | `60000` | upstream fetch timeout in ms |
 | `streamStallTimeoutMs` | `45000` | max time to wait for next SSE chunk before aborting |
 
@@ -276,7 +314,7 @@ legacy toggle compatibility:
 
 ### Environment Variables
 
-override any config with env vars:
+override any config with env vars (boolean values are truthy only for `"1"`):
 
 | variable | what it does |
 |----------|--------------|
@@ -295,9 +333,15 @@ override any config with env vars:
 | `CODEX_AUTH_FAST_SESSION=1` | enable fast-session defaults |
 | `CODEX_AUTH_FAST_SESSION_STRATEGY=always` | force fast mode on every prompt |
 | `CODEX_AUTH_FAST_SESSION_MAX_INPUT_ITEMS=24` | tune max retained input items in fast mode |
+| `CODEX_AUTH_ROTATION_STRATEGY=sticky` | override account selection (`hybrid`, `sticky`, `round-robin`) |
 | `CODEX_AUTH_BEGINNER_SAFE_MODE=1` | enable beginner-safe retry behavior |
 | `CODEX_AUTH_RETRY_PROFILE=aggressive` | override retry profile (`conservative`, `balanced`, `aggressive`) |
 | `CODEX_AUTH_PER_PROJECT_ACCOUNTS=0` | disable per-project accounts |
+| `CODEX_AUTH_PARALLEL_PROBING=1` | enable concurrent account health probes |
+| `CODEX_AUTH_PARALLEL_PROBING_MAX_CONCURRENCY=3` | max concurrent probes (1–5) |
+| `CODEX_AUTH_EMPTY_RESPONSE_MAX_RETRIES=3` | override empty-response retry count |
+| `CODEX_AUTH_EMPTY_RESPONSE_RETRY_DELAY_MS=1500` | override empty-response retry delay |
+| `CODEX_AUTH_PID_OFFSET_ENABLED=1` | enable PID-based hybrid score offset |
 | `CODEX_AUTH_AUTO_UPDATE=0` | disable automatic OpenCode plugin cache refresh when npm has a newer plugin version |
 | `CODEX_AUTH_TOAST_DURATION_MS=8000` | set toast duration |
 | `CODEX_AUTH_RETRY_ALL_RATE_LIMITED=0` | disable wait-and-retry |
@@ -317,6 +361,7 @@ override any config with env vars:
 | `CODEX_AUTH_SEND_ORGANIZATION_HEADER=1` | restore legacy `openai-organization` request pinning (off by default; upstream Codex never sends it) |
 | `CODEX_AUTH_FETCH_TIMEOUT_MS=120000` | override fetch timeout |
 | `CODEX_AUTH_STREAM_STALL_TIMEOUT_MS=60000` | override SSE stall timeout |
+| `CODEX_KEYCHAIN=1` | opt in to OS-native keychain account storage |
 
 ---
 
@@ -358,8 +403,8 @@ different settings for different models:
           "name": "fast gpt-5.5",
           "options": { "reasoningEffort": "low" }
         },
-        "gpt-5.5-smart": {
-          "name": "smart gpt-5.5",
+        "gpt-5.6-sol": {
+          "name": "GPT 5.6 Sol (OAuth)",
           "options": { "reasoningEffort": "high" }
         }
       }
@@ -378,115 +423,55 @@ global (`~/.config/opencode/opencode.json`):
   "plugin": ["oc-codex-multi-auth"],
   "provider": {
     "openai": {
-      "options": { "reasoningEffort": "medium" }
+      "options": {
+        "store": false,
+        "include": ["reasoning.encrypted_content"]
+      }
     }
   }
 }
 ```
 
-project (`my-project/.opencode.json`):
-```json
-{
-  "provider": {
-    "openai": {
-      "options": { "reasoningEffort": "high" }
-    }
-  }
-}
+project override (`<project>/.opencode.json`) can set a default model or per-project provider options without changing the global install.
+
+### Compact modern selectors (default install)
+
+```bash
+opencode run "task" --model=openai/gpt-5.5 --variant=medium
+opencode run "task" --model=openai/gpt-5.5-fast --variant=medium
+opencode run "task" --model=openai/gpt-5.6-sol --variant=high
+opencode run "task" --model=openai/gpt-5-codex --variant=high
 ```
 
-result: project uses `high`, other projects use `medium`.
+### Explicit selectors (`--full` or `--legacy`)
+
+```bash
+npx -y oc-codex-multi-auth@latest --full
+opencode run "task" --model=openai/gpt-5.5-medium
+opencode run "task" --model=openai/gpt-5.6-sol-high
+```
 
 ---
 
 ## File Locations
 
-| file | what it's for |
-|------|---------------|
-| `~/.config/opencode/opencode.json` | global opencode config |
-| `<project>/.opencode.json` | project-specific config |
-| `~/.opencode/openai-codex-auth-config.json` | plugin config |
-| `~/.opencode/auth/openai.json` | oauth tokens |
-| `~/.opencode/oc-codex-multi-auth-accounts.json` | global account storage |
-| `~/.opencode/projects/<project-key>/oc-codex-multi-auth-accounts.json` | per-project account storage |
-| `~/.opencode/backups/codex-backup-YYYYMMDD-HHMMSSmmm-<hex>.json` | timestamped export backup (global storage mode) |
-| `~/.opencode/projects/<project-key>/backups/codex-backup-YYYYMMDD-HHMMSSmmm-<hex>.json` | timestamped export backup (per-project storage mode) |
-| `.../backups/codex-pre-import-backup-YYYYMMDD-HHMMSSmmm-<hex>.json` | automatic snapshot created before non-dry-run imports when existing accounts are present |
-| `~/.opencode/logs/codex-plugin/` | debug logs |
+| Path | Purpose |
+|------|---------|
+| `~/.config/opencode/opencode.json` | OpenCode provider/plugin config |
+| `~/.config/opencode/tui.json` | OpenCode TUI plugin config |
+| `~/.opencode/openai-codex-auth-config.json` | plugin runtime config (this page) |
+| `~/.opencode/auth/openai.json` | OpenCode OAuth tokens |
+| `~/.opencode/oc-codex-multi-auth-accounts.json` | global V3 account pool |
+| `~/.opencode/projects/<project-key>/oc-codex-multi-auth-accounts.json` | per-project account pool |
+| `~/.opencode/logs/codex-plugin/` | request/debug logs when enabled |
 
 ---
 
-## Debugging
+## See Also
 
-### Check Config Is Valid
-
-```bash
-opencode
-# shows errors if config is invalid
-```
-
-### Verify Model Resolution
-
-```bash
-DEBUG_CODEX_PLUGIN=1 opencode run "test" --model=openai/gpt-5.5 --variant=medium
-```
-
-look for:
-```text
-[openai-codex-plugin] Model config lookup: "gpt-5.5" -> normalized to "gpt-5.5" for API {
-  hasModelSpecificConfig: true,
-  resolvedConfig: { ... }
-}
-```
-
-### Test Per-Model Options
-
-```bash
-# default compact selectors
-ENABLE_PLUGIN_REQUEST_LOGGING=1 opencode run "test" --model=openai/gpt-5.5 --variant=medium
-ENABLE_PLUGIN_REQUEST_LOGGING=1 opencode run "test" --model=openai/gpt-5.5 --variant=high
-
-# direct selector IDs, only after installing with --full
-ENABLE_PLUGIN_REQUEST_LOGGING=1 opencode run "test" --model=openai/gpt-5.5-medium
-
-# compare reasoning.effort in logs
-cat ~/.opencode/logs/codex-plugin/request-*-after-transform.json | jq '.reasoning.effort'
-```
-
----
-
-## Troubleshooting
-
-### Model Not Found
-
-**error**: `Model 'openai/my-model' not found`
-
-**fix**: make sure config key matches exactly:
-```json
-{ "models": { "my-model": { ... } } }
-```
-```bash
-opencode run "test" --model=openai/my-model
-```
-
-### Per-Model Options Not Applied
-
-```bash
-DEBUG_CODEX_PLUGIN=1 opencode run "test" --model=openai/your-model
-```
-
-look for `hasModelSpecificConfig: true`. if it's false, config lookup failed - check for typos.
-
-### Per-Project Accounts Not Working
-
-make sure you're in a project directory (has `.git`, `package.json`, etc). the plugin auto-detects the project root and uses a namespaced file under `~/.opencode/projects/`. if no project root is found, it falls back to global storage.
-
-check which storage is being used:
-```bash
-DEBUG_CODEX_PLUGIN=1 opencode
-# look for storage path in logs
-```
-
----
-
-**next**: [troubleshooting](troubleshooting.md) | [back to docs](index.md)
+- [getting-started.md](getting-started.md)
+- [tools-and-cli.md](tools-and-cli.md)
+- [architecture.md](architecture.md)
+- [development/CONFIG_FIELDS.md](development/CONFIG_FIELDS.md)
+- [development/CONFIG_FLOW.md](development/CONFIG_FLOW.md)
+- [../config/README.md](../config/README.md)

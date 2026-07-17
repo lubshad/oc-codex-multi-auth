@@ -1,10 +1,11 @@
 # oc-codex-multi-auth Docs
 
-Use your ChatGPT Plus/Pro subscription inside OpenCode with OAuth login, Codex/GPT-5 model routing, multi-account rotation, account switching, health checks, quota status, diagnostics, and recovery tools.
+Use your ChatGPT Plus/Pro subscription inside OpenCode with OAuth login, Codex/GPT-5 model routing (including GPT-5.6), multi-account rotation, account switching, health checks, quota status, diagnostics, and recovery tools.
 
 ## User Guides
 
 - [Getting Started](getting-started.md)
+- [Tools and CLI](tools-and-cli.md)
 - [Configuration Reference](configuration.md)
 - [Troubleshooting](troubleshooting.md)
 - [FAQ](faq.md)
@@ -19,6 +20,12 @@ Use your ChatGPT Plus/Pro subscription inside OpenCode with OAuth login, Codex/G
 - [Configuration Fields](development/CONFIG_FIELDS.md)
 - [Testing Guide](development/TESTING.md)
 - [TUI Parity Checklist](development/TUI_PARITY_CHECKLIST.md)
+
+## Historical audits
+
+The `audits/` tree is a **historical** review snapshot. Prefer current user and development docs above for live behavior; treat audit findings as dated context, not the product contract.
+
+- [Audits index](audits/INDEX.md)
 
 ## Repository Links
 

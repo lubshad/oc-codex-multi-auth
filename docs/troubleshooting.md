@@ -1,6 +1,8 @@
 # Troubleshooting
 
-Common setup, authentication, model, and request-debugging issues for `oc-codex-multi-auth`.
+Common setup, authentication, model, and request-debugging issues for `oc-codex-multi-auth` (current package line, including the 24-tool surface and GPT-5.6 catalog).
+
+For install modes, the full tool list, and standalone CLI commands (`doctor`, `status`, `list`, `limits`, `health`, `diag`, `warm`), see [Tools and CLI](tools-and-cli.md) and [Getting Started](getting-started.md).
 
 ---
 
@@ -13,6 +15,14 @@ codex-setup
 codex-doctor
 codex-doctor --fix
 codex-next
+```
+
+Or without an agent loop (no model tokens):
+
+```bash
+oc-codex-multi-auth doctor
+oc-codex-multi-auth status --json
+oc-codex-multi-auth warm
 ```
 
 For machine-readable automation or CI checks, these read-only tools also accept `format="json"`:

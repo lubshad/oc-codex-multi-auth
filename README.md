@@ -5,7 +5,7 @@
 [![CI](https://github.com/ndycode/oc-codex-multi-auth/actions/workflows/ci.yml/badge.svg)](https://github.com/ndycode/oc-codex-multi-auth/actions/workflows/ci.yml)
 [![MIT license](https://img.shields.io/npm/l/oc-codex-multi-auth.svg)](LICENSE)
 
-`oc-codex-multi-auth` is an OpenCode plugin for ChatGPT Plus/Pro OAuth, Codex and GPT-5 model routing, multi-account rotation, account switching, health checks, quota visibility, diagnostics, and recovery tools. It installs the OpenCode provider/TUI configuration, registers a `codex-*` command toolkit, and routes OpenCode OpenAI SDK requests through the ChatGPT-backed Codex flow with local account state.
+`oc-codex-multi-auth` is an OpenCode plugin for ChatGPT Plus/Pro OAuth, Codex and GPT-5 model routing (including GPT-5.6 Sol/Terra/Luna), multi-account rotation, account switching, health checks, quota visibility, diagnostics, and recovery tools. It installs the OpenCode provider/TUI configuration, registers a 24-tool `codex-*` command toolkit, and routes OpenCode OpenAI SDK requests through the ChatGPT-backed Codex flow with local account state.
 
 Use it when you want OpenCode to run Codex-style coding workflows from your own ChatGPT subscription while keeping accounts visible, switchable, health-checked, and recoverable from the terminal.
 
@@ -20,10 +20,10 @@ Use it when you want OpenCode to run Codex-style coding workflows from your own 
 ## What You Get
 
 - OpenCode plugin support for ChatGPT Plus/Pro OAuth and Codex/GPT-5 coding workflows
-- Ready-to-use GPT-5.5, GPT-5.5 Fast, GPT-5.4 Mini, GPT-5.4 Nano, GPT-5.1, and Codex model templates
-- Compact modern OpenCode config with variant-based selectors, plus explicit legacy selector IDs when needed
+- GPT-5.6 Sol, Terra, and Luna (responses-lite path) plus GPT-5.5, GPT-5.5 Fast, GPT-5.4 Mini, GPT-5.4 Nano, GPT-5.1, and Codex model templates
+- Compact modern OpenCode config with 12 base families and 53 variant presets; explicit legacy selector IDs when needed
 - Stateless Codex-compatible request handling with `store: false` and `reasoning.encrypted_content`
-- Multi-account rotation with health-aware selection, cooldowns, automatic token refresh, and failover
+- Multi-account rotation with hybrid health scoring, cooldowns, automatic token refresh, and failover
 - Explicit saved-account listing, account switching, labeling, tagging, notes, health checks, and diagnostics
 - Per-project account storage under `~/.opencode/projects/<project-key>/...`
 - Guided setup, doctor, next-action, dashboard, export/import, keychain, and troubleshooting tools
@@ -46,10 +46,10 @@ Use it when you want OpenCode to run Codex-style coding workflows from your own 
 
 | Surface | Purpose |
 | --- | --- |
-| `oc-codex-multi-auth` | npm installer bin; updates `~/.config/opencode/opencode.json`, manages `tui.json`, normalizes stale plugin entries, and clears OpenCode plugin cache |
+| `oc-codex-multi-auth` | npm installer bin; updates `~/.config/opencode/opencode.json`, manages `tui.json`, normalizes stale plugin entries, and clears OpenCode plugin cache. Also runs standalone commands: `doctor`, `status`, `list`, `limits`, `dashboard`, `health`, `diag`, `warm` |
 | OpenCode plugin entry (`index.ts`) | auth loader, OAuth login modes, provider fetch pipeline, account rotation, retry/failover, and `codex-*` tool registry |
 | OpenCode TUI plugin (`tui.ts`) | prompt quota status, quota details, shared quota cache, and active-account-aware display |
-| 21 `codex-*` tools | setup, help, status, list, switch, limits, health, metrics, doctor, dashboard, backup, keychain, diagnostics, and recovery actions |
+| 24 `codex-*` tools | setup, help, status, list, switch, warm, limits, health, metrics, doctor, dashboard, pool, backup, keychain, diagnostics, and recovery actions |
 
 The plugin does not replace OpenCode. OpenCode remains the host; this package installs provider/TUI config and supplies the OAuth-backed Codex request pipeline that OpenCode calls.
 
@@ -76,11 +76,23 @@ The plugin does not replace OpenCode. OpenCode remains the host; this package in
 <details open>
 <summary><b>For Humans</b></summary>
 
-### Option A: Standard install
+### Option A: Standard install (compact modern)
+
+Default mode writes 12 base OAuth model families and leaves reasoning depth to OpenCode's variant picker.
 
 ```bash
 npx -y oc-codex-multi-auth@latest
 ```
+
+Installer flags:
+
+| Flag | Effect |
+| --- | --- |
+| (default) / `--modern` | Compact modern catalog: 12 bases, 53 variants |
+| `--full` | Compact bases plus 53 explicit selector IDs |
+| `--legacy` | Explicit-only catalog for older OpenCode |
+| `--dry-run` | Show actions without writing |
+| `--no-cache-clear` | Skip clearing the OpenCode plugin cache |
 
 ### Option B: Full explicit model catalog
 
@@ -100,6 +112,20 @@ opencode auth login
 
 The installer updates `~/.config/opencode/opencode.json`, backs up the previous config, normalizes the plugin entry to `"oc-codex-multi-auth"`, enables the TUI status plugin in `~/.config/opencode/tui.json`, and clears the OpenCode cached plugin copy so OpenCode reinstalls the latest package.
 
+### Standalone CLI (no agent / no token cost)
+
+```bash
+oc-codex-multi-auth status
+oc-codex-multi-auth list
+oc-codex-multi-auth warm
+oc-codex-multi-auth doctor
+oc-codex-multi-auth health
+oc-codex-multi-auth limits
+oc-codex-multi-auth dashboard
+oc-codex-multi-auth diag
+# or: npx -y oc-codex-multi-auth@latest warm --json
+```
+
 </details>
 
 <details>
@@ -113,7 +139,7 @@ The installer updates `~/.config/opencode/opencode.json`, backs up the previous 
    - `opencode auth login`
 3. Validate config:
    - `opencode debug config`
-4. Run a smoke request:
+4. Run a smoke request (compact modern selectors):
    - `opencode run "Explain this repository" --model=openai/gpt-5.5 --variant=medium`
 5. Inspect plugin state with the OpenCode tool surface:
    - `codex-status`
@@ -146,6 +172,7 @@ Run a prompt with compact modern selectors:
 ```bash
 opencode run "Summarize the failing test and suggest a fix" --model=openai/gpt-5.5 --variant=medium
 opencode run "Summarize the failing test and suggest a fix" --model=openai/gpt-5.5-fast --variant=medium
+opencode run "Plan the refactor" --model=openai/gpt-5.6-sol --variant=high
 ```
 
 Use Codex-focused routing:
@@ -210,7 +237,8 @@ Most of these also run as a **direct CLI** with no agent/model involvement (no t
 
 - stateless request handling forces `store: false`
 - `reasoning.encrypted_content` is preserved for multi-turn continuity
-- account rotation is health-aware and avoids repeatedly selecting cooling accounts
+- GPT-5.6 tiers use the responses-lite request shape and default client identity `opencode`; other models default to `codex_cli_rs`
+- account rotation is health-aware (`rotationStrategy` default `hybrid`) and avoids repeatedly selecting cooling accounts
 - 5xx bursts, network failures, and quota responses penalize account health
 - token refresh is queued to avoid refresh races
 - unsupported-model handling is strict by default, with opt-in fallback controls
@@ -304,19 +332,22 @@ Selected runtime/environment overrides:
 | `CODEX_AUTH_REQUEST_TRANSFORM_MODE=legacy` | Re-enable legacy Codex request rewriting |
 | `CODEX_MODE=0/1` | Disable/enable bridge prompt behavior |
 | `CODEX_TUI_V2=0/1` | Disable/enable codex-style tool output |
-| `CODEX_TUI_COLOR_PROFILE=truecolor|ansi256|ansi16` | Force terminal color profile |
-| `CODEX_TUI_GLYPHS=ascii|unicode|auto` | Force terminal glyph style |
+| `CODEX_TUI_COLOR_PROFILE=truecolor\|ansi256\|ansi16` | Force terminal color profile |
+| `CODEX_TUI_GLYPHS=ascii\|unicode\|auto` | Force terminal glyph style |
 | `CODEX_TUI_MASK_EMAIL=0/1` | Hide account email in TUI quota status only |
 | `CODEX_TUI_MASK_EMAIL_DETAILS=0/1` | Also hide account email in quota details when prompt masking is enabled |
 | `CODEX_AUTH_PER_PROJECT_ACCOUNTS=0/1` | Disable/enable per-project account pools |
 | `CODEX_AUTH_AUTO_UPDATE=0/1` | Disable/enable daily npm update check and cache refresh |
-| `CODEX_AUTH_UNSUPPORTED_MODEL_POLICY=strict|fallback` | Control unsupported-model retry behavior |
+| `CODEX_AUTH_ROTATION_STRATEGY=hybrid\|sticky\|round-robin` | Account selection strategy |
+| `CODEX_AUTH_UNSUPPORTED_MODEL_POLICY=strict\|fallback` | Control unsupported-model retry behavior |
 | `CODEX_AUTH_ACCOUNT_ID=<id>` | Force a specific workspace/account id |
 | `CODEX_AUTH_FETCH_TIMEOUT_MS=<ms>` | Request timeout override |
 | `CODEX_AUTH_STREAM_STALL_TIMEOUT_MS=<ms>` | SSE stream stall timeout override |
 | `ENABLE_PLUGIN_REQUEST_LOGGING=1` | Enable request metadata logs |
 | `CODEX_PLUGIN_LOG_BODIES=1` | Include raw request/response bodies in logs; sensitive |
 | `CODEX_KEYCHAIN=1` | Opt in to OS-native keychain account storage |
+
+Boolean env overrides are truthy only for the literal string `"1"`.
 
 Validate config after changes:
 
@@ -434,7 +465,7 @@ codex-doctor deep=true format="json"
 
 ## Release Notes
 
-- Current package version: `6.1.8`
+- Current package version: `6.9.1`
 - Changelog: [CHANGELOG.md](CHANGELOG.md)
 - Releases are automated with [release-please](https://github.com/googleapis/release-please)
 

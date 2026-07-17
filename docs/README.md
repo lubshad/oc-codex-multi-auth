@@ -5,7 +5,8 @@ This documentation set is split by purpose so the main README can stay focused o
 ## Start Here
 
 - [Getting Started](getting-started.md): full install, auth, configuration templates, model selectors, and first-run verification
-- [Architecture Overview](architecture.md): public map of the installer, OpenCode plugin entry, TUI plugin, tool registry, request pipeline, and storage model
+- [Tools and CLI](tools-and-cli.md): complete catalog of 24 `codex-*` tools and standalone bin commands
+- [Architecture Overview](architecture.md): public map of the installer, OpenCode plugin entry, TUI plugin, tool registry, request pipeline, rotation, and storage model
 - [Configuration Reference](configuration.md): config keys, environment variables, fallback behavior, and file locations
 - [Troubleshooting](troubleshooting.md): common failure modes and recovery steps
 - [FAQ](faq.md): short answers for common questions
@@ -19,6 +20,10 @@ This documentation set is split by purpose so the main README can stay focused o
 - [Configuration Fields](development/CONFIG_FIELDS.md)
 - [Testing Guide](development/TESTING.md)
 - [TUI Parity Checklist](development/TUI_PARITY_CHECKLIST.md)
+
+## Historical audits
+
+Files under [audits/](audits/INDEX.md) are a **historical** review archive. They are useful for context but are not the source of truth for current package behavior (v6.9.1). Prefer the guides above and `CHANGELOG.md` for live contracts.
 
 ## Notes
 

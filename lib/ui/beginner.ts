@@ -256,14 +256,11 @@ export function buildBeginnerDoctorFindings(input: {
 		});
 	}
 
-	if (input.accounts.some((account) => account.refreshVerificationFailed)) {
-		findings.push({
-			severity: "error",
-			code: "refresh-verification-failed",
-			summary: "One or more accounts failed refresh-token verification.",
-			action: "Re-authenticate the affected account(s) with `opencode auth login`.",
-		});
-	}
+	// NOTE: the `refresh-verification-failed` finding is emitted by the
+	// codex-doctor fix path (with the affected slot numbers) via extraFindings.
+	// Do not also generate a generic copy here off `refreshVerificationFailed`,
+	// or `codex-doctor --fix` reports the same-coded finding twice. The flag is
+	// still consumed above (blocked count) and below (recommended next action).
 
 	if (input.runtime.authRefreshFailures > 0) {
 		findings.push({

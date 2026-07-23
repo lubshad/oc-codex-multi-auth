@@ -1380,9 +1380,33 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 
 		const reloadCachedAccountManager = async (): Promise<void> => {
 			if (!cachedAccountManager) return;
-			const reloadedManager = await AccountManager.loadFromDisk();
-			cachedAccountManager = reloadedManager;
-			accountManagerPromise = Promise.resolve(reloadedManager);
+			const previous = cachedAccountManager;
+			// Flush the outgoing manager's pending debounced save BEFORE reading
+			// fresh disk state. Otherwise a queued save from `previous` can fire
+			// after this reload and silently overwrite the single-use refresh
+			// tokens codex-health/codex-refresh just persisted via
+			// withAccountStorageTransaction — a lost-update on rotated credentials.
+			// Mirrors invalidateAccountManagerCache above.
+			try {
+				await previous.flushPendingSave();
+			} catch (error) {
+				logWarn(
+					`Failed to flush pending save while reloading account manager: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
+			try {
+				const reloadedManager = await AccountManager.loadFromDisk();
+				cachedAccountManager = reloadedManager;
+				accountManagerPromise = Promise.resolve(reloadedManager);
+				// Dispose only after the replacement is installed so we never leak
+				// the outgoing manager's shutdown handler on every reload, and so a
+				// load failure leaves the working manager intact.
+				previous.disposeShutdownHandler();
+			} catch (error) {
+				logWarn(
+					`Failed to reload account manager: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
 		};
 
 		const persistAuthenticatedSelections = async (

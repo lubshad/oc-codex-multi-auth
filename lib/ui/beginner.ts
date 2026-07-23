@@ -10,6 +10,7 @@ export interface BeginnerAccountSnapshot {
 	isActive: boolean;
 	rateLimitedUntil: number | null;
 	coolingDownUntil: number | null;
+	refreshVerificationFailed?: boolean;
 }
 
 export interface BeginnerRuntimeSnapshot {
@@ -94,7 +95,11 @@ export function summarizeBeginnerAccounts(
 		if (isRateLimited) rateLimited += 1;
 		if (isCoolingDown) coolingDown += 1;
 
-		const isBlocked = !account.enabled || isRateLimited || isCoolingDown;
+		const isBlocked =
+			!account.enabled ||
+			isRateLimited ||
+			isCoolingDown ||
+			account.refreshVerificationFailed === true;
 		if (isBlocked) blocked += 1;
 		else healthy += 1;
 	}
@@ -251,6 +256,12 @@ export function buildBeginnerDoctorFindings(input: {
 		});
 	}
 
+	// NOTE: the `refresh-verification-failed` finding is emitted by the
+	// codex-doctor fix path (with the affected slot numbers) via extraFindings.
+	// Do not also generate a generic copy here off `refreshVerificationFailed`,
+	// or `codex-doctor --fix` reports the same-coded finding twice. The flag is
+	// still consumed above (blocked count) and below (recommended next action).
+
 	if (input.runtime.authRefreshFailures > 0) {
 		findings.push({
 			severity: "warning",
@@ -331,6 +342,9 @@ export function recommendBeginnerNextAction(input: {
 	}
 	if (summary.healthy === 0) {
 		return "Run `codex-health`, then re-login or switch to a healthy account.";
+	}
+	if (input.accounts.some((account) => account.refreshVerificationFailed)) {
+		return "Re-authenticate the affected account(s) with `opencode auth login`.";
 	}
 	if (summary.rateLimited > 0) {
 		return "Use `codex-switch index=2` to move away from rate-limited accounts.";

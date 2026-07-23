@@ -449,6 +449,8 @@ vi.mock("../lib/accounts.js", () => {
 		}
 
 		saveToDiskDebounced() {}
+		async flushPendingSave() {}
+		disposeShutdownHandler() {}
 		updateFromAuth() {}
 		clearAuthFailures() {}
 		incrementAuthFailures() { return 1; }
@@ -1971,7 +1973,7 @@ describe("OpenAIOAuthPlugin", () => {
 		});
 
 
-		it("does not report cleared stale-state when saveAccounts fails during fix (issue #171)", async () => {
+		it("does not report cleared stale-state when its persist fails during fix (issue #171)", async () => {
 			mockStorage.accounts = [
 				{
 					refreshToken: "r1",
@@ -1985,17 +1987,55 @@ describe("OpenAIOAuthPlugin", () => {
 				},
 			];
 
-			const { saveAccounts } = await import("../lib/storage.js");
-			vi.mocked(saveAccounts).mockRejectedValueOnce(new Error("disk full"));
+			const { withAccountStorageTransaction } = await import("../lib/storage.js");
+			const originalTransaction = vi.mocked(withAccountStorageTransaction).getMockImplementation();
+			vi.mocked(withAccountStorageTransaction).mockImplementationOnce(
+				async <T>(
+					callback: (
+						loadedStorage: typeof mockStorage,
+						persist: (nextStorage: typeof mockStorage) => Promise<void>,
+					) => Promise<T>,
+				) => {
+					const loadedStorage = cloneMockStorage();
+					const persist = async (nextStorage: typeof mockStorage) => {
+						mockStorage.version = nextStorage.version;
+						mockStorage.accounts = nextStorage.accounts.map(cloneAccount);
+						mockStorage.activeIndex = nextStorage.activeIndex;
+						mockStorage.activeIndexByFamily = { ...nextStorage.activeIndexByFamily };
+					};
+					return callback(loadedStorage, persist);
+				},
+			);
+			vi.mocked(withAccountStorageTransaction).mockImplementationOnce(
+				async <T>(
+					callback: (
+						loadedStorage: typeof mockStorage,
+						persist: (nextStorage: typeof mockStorage) => Promise<void>,
+					) => Promise<T>,
+				) => {
+					const loadedStorage = cloneMockStorage();
+					const persist = async () => {
+						throw new Error("disk full");
+					};
+					return callback(loadedStorage, persist);
+				},
+			);
+			vi.mocked(withAccountStorageTransaction).mockImplementation(
+				originalTransaction,
+			);
 
 			const result = await plugin.tool["codex-doctor"].execute({ fix: true });
 
-			// The persist failed, so no "Cleared ..." message may be emitted —
-			// otherwise the user would believe the repair landed when the on-disk
-			// state still carries the stale cooldown/rate-limit block.
+			// The token credential may have been refreshed before the later stale-state
+			// transaction failed, but no "Cleared ..." stale-state fix may be emitted —
+			// otherwise the user would believe that repair landed when it did not.
 			expect(result).not.toContain("Cleared cooldown");
 			expect(result).not.toContain("stale rate-limit marker");
-			expect(result).toContain("Failed to persist refresh updates");
+			expect(result).toContain("Failed to persist stale-state repairs");
+			expect(mockStorage.accounts[0]?.coolingDownUntil).toBeGreaterThan(Date.now());
+			expect(mockStorage.accounts[0]?.rateLimitResetTimes).toEqual({
+				"gpt-5.4": expect.any(Number),
+			});
 		});
 
 		it("surfaces re-login-required when a refresh fails during fix (issue #171)", async () => {
@@ -2014,6 +2054,223 @@ describe("OpenAIOAuthPlugin", () => {
 			// A failed refresh must not be silent: the user is told to re-login.
 			expect(result).toContain("opencode auth login");
 			expect(result).toMatch(/need re-login|re-authenticate/i);
+		});
+
+		it("never reports every account healthy after all refresh verifications fail", async () => {
+			mockStorage.accounts = Array.from({ length: 8 }, (_, index) => ({
+				refreshToken: `dead-${index + 1}`,
+				email: `user${index + 1}@example.com`,
+			}));
+			const { queuedRefresh } = await import("../lib/refresh-queue.js");
+			vi.mocked(queuedRefresh).mockResolvedValue({
+				type: "failed",
+				reason: "invalid_grant",
+				message: "refresh_token_reused",
+			});
+
+			const result = (await plugin.tool["codex-doctor"].execute({ fix: true })) as string;
+
+			expect(result).toContain("healthy=0");
+			expect(result).not.toContain("healthy=8");
+			expect(result).toContain("8 account(s) failed refresh-token verification");
+			expect(result).toContain("8 account(s) need re-login");
+
+			vi.mocked(queuedRefresh).mockImplementation(async () => ({
+				type: "success" as const,
+				access: "refreshed-access",
+				refresh: "refreshed-refresh",
+				expires: Date.now() + 3_600_000,
+			}));
+		});
+
+		it("keeps successful accounts healthy and recommends re-login after mixed verification results", async () => {
+			mockStorage.accounts = [
+				{ refreshToken: "alive-token", email: "alive@example.com" },
+				{ refreshToken: "dead-token", email: "dead@example.com" },
+			];
+			const { queuedRefresh } = await import("../lib/refresh-queue.js");
+			vi.mocked(queuedRefresh).mockImplementation(async (token: string) =>
+				token === "alive-token"
+					? {
+							type: "success" as const,
+							access: "alive-access",
+							refresh: "alive-refresh",
+							expires: Date.now() + 3_600_000,
+						}
+					: {
+							type: "failed" as const,
+							reason: "invalid_grant",
+							message: "refresh token expired",
+						},
+			);
+
+			const result = parseJsonOutput<{
+				summary: { healthyAccounts: number; blockedAccounts: number };
+				findings: Array<{ summary: string }>;
+				recommendedNextAction: string;
+			}>(await plugin.tool["codex-doctor"].execute({ fix: true, format: "json" }));
+			vi.mocked(queuedRefresh).mockImplementation(async () => ({
+				type: "success" as const,
+				access: "refreshed-access",
+				refresh: "refreshed-refresh",
+				expires: Date.now() + 3_600_000,
+			}));
+
+			expect(result.summary).toMatchObject({ healthyAccounts: 1, blockedAccounts: 1 });
+			expect(result.findings.some((finding) =>
+				finding.summary.includes("failed refresh-token verification"),
+			)).toBe(true);
+			expect(result.recommendedNextAction).toContain("opencode auth login");
+		});
+
+		it("re-resolves the selected account identity before auto-switching after storage reorder", async () => {
+			mockStorage.accounts = [
+				{
+					organizationId: "org-current",
+					accountId: "current",
+					refreshToken: "current-token",
+				},
+				{
+					organizationId: "org-best",
+					accountId: "best",
+					refreshToken: "best-token",
+				},
+			];
+			const { queuedRefresh } = await import("../lib/refresh-queue.js");
+			vi.mocked(queuedRefresh).mockImplementation(async () => ({
+				type: "success" as const,
+				access: "refreshed-access",
+				refresh: "refreshed-refresh",
+				expires: Date.now() + 3_600_000,
+			}));
+			const { AccountManager } = await import("../lib/accounts.js");
+			vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValue({
+				getSelectionExplainability: () => [
+					{
+						index: 0,
+						enabled: true,
+						isCurrentForFamily: true,
+						eligible: true,
+						reasons: [],
+						healthScore: 1,
+						tokensAvailable: 1,
+						lastUsed: 1,
+					},
+					{
+						index: 1,
+						enabled: true,
+						isCurrentForFamily: false,
+						eligible: true,
+						reasons: [],
+						healthScore: 2,
+						tokensAvailable: 2,
+						lastUsed: 2,
+					},
+				],
+				getAccountsSnapshot: () => mockStorage.accounts.map((account) => ({
+					...account,
+					addedAt: account.addedAt ?? 0,
+					lastUsed: account.lastUsed ?? 0,
+					rateLimitResetTimes: account.rateLimitResetTimes ?? {},
+				})),
+			} as unknown as InstanceType<typeof AccountManager>);
+			const { withAccountStorageTransaction } = await import("../lib/storage.js");
+			const originalTransaction = vi.mocked(withAccountStorageTransaction).getMockImplementation();
+			let transactionCount = 0;
+			vi.mocked(withAccountStorageTransaction).mockImplementation(
+				async (callback) => {
+					transactionCount += 1;
+					// Two refresh persists and one stale-state clear precede the
+					// auto-switch persist, so transaction 4 must resolve identity
+					// against the reordered storage snapshot.
+					if (transactionCount !== 4) {
+						return originalTransaction!(callback);
+					}
+					const reorderedStorage = {
+						...cloneMockStorage(),
+						accounts: [
+							{ refreshToken: "inserted-token" },
+							...cloneMockStorage().accounts,
+						],
+					};
+					return callback(reorderedStorage, async (nextStorage) => {
+						mockStorage.accounts = nextStorage.accounts.map(cloneAccount);
+						mockStorage.activeIndex = nextStorage.activeIndex;
+						mockStorage.activeIndexByFamily = { ...nextStorage.activeIndexByFamily };
+					});
+				},
+			);
+
+			await plugin.tool["codex-doctor"].execute({ fix: true });
+
+			expect(mockStorage.accounts[mockStorage.activeIndex]?.accountId).toBe("best");
+			expect(mockStorage.activeIndex).toBe(2);
+			expect(transactionCount).toBe(4);
+			vi.mocked(withAccountStorageTransaction).mockImplementation(originalTransaction);
+		});
+
+		it("persists rotated tokens transactionally during fix and preserves concurrent state", async () => {
+			mockStorage.accounts = [
+				{
+					refreshToken: "old-refresh",
+					email: "user@example.com",
+					coolingDownUntil: Date.now() + 600_000,
+					cooldownReason: "auth-failure",
+					rateLimitResetTimes: { "gpt-5.4": Date.now() + 3_600_000 },
+				},
+			];
+			const { queuedRefresh } = await import("../lib/refresh-queue.js");
+			vi.mocked(queuedRefresh).mockResolvedValueOnce({
+				type: "success" as const,
+				access: "rotated-access",
+				refresh: "rotated-refresh",
+				expires: Date.now() + 3_600_000,
+			});
+			const { withAccountStorageTransaction } = await import("../lib/storage.js");
+			const originalTransaction = vi.mocked(withAccountStorageTransaction).getMockImplementation();
+			const persistSnapshot = async (nextStorage: typeof mockStorage) => {
+				mockStorage.version = nextStorage.version;
+				mockStorage.accounts = nextStorage.accounts.map(cloneAccount);
+				mockStorage.activeIndex = nextStorage.activeIndex;
+				mockStorage.activeIndexByFamily = { ...nextStorage.activeIndexByFamily };
+			};
+			vi.mocked(withAccountStorageTransaction)
+				// Credential transaction: the fresh snapshot carries a concurrent
+				// rate-limit update, but no concurrent cooldown.
+				.mockImplementationOnce(
+					async <T>(
+						callback: (
+							loadedStorage: typeof mockStorage,
+							persist: (nextStorage: typeof mockStorage) => Promise<void>,
+						) => Promise<T>,
+					) => {
+						const loadedStorage = cloneMockStorage();
+						loadedStorage.accounts[0]!.rateLimitResetTimes = {
+							"gpt-5.4-mini": Date.now() + 1_800_000,
+						};
+						delete loadedStorage.accounts[0]!.coolingDownUntil;
+						delete loadedStorage.accounts[0]!.cooldownReason;
+						return callback(loadedStorage, persistSnapshot);
+					},
+				);
+			vi.mocked(withAccountStorageTransaction).mockImplementation(
+				originalTransaction,
+			);
+
+			const result = (await plugin.tool["codex-doctor"].execute({ fix: true })) as string;
+
+			expect(result).toContain("Refreshed and persisted 1 account token(s)");
+			expect(mockStorage.accounts[0]?.refreshToken).toBe("rotated-refresh");
+			expect(mockStorage.accounts[0]?.accessToken).toBe("rotated-access");
+			expect(mockStorage.accounts[0]?.tokenRotatedAt).toBeGreaterThan(0);
+			// The stale repair starts from the post-credential snapshot, so it can
+			// clear the original cooldown while retaining the newer rate-limit
+			// marker. The absent concurrent cooldown was a concurrent recovery and
+			// remains cleared.
+			expect(mockStorage.accounts[0]?.rateLimitResetTimes).toEqual({
+				"gpt-5.4-mini": expect.any(Number),
+			});
+			expect(mockStorage.accounts[0]?.coolingDownUntil).toBeUndefined();
 		});
 
 		it("recovers the reporter's exact composite 3-account pool on fix (issue #171)", async () => {
@@ -2207,6 +2464,149 @@ describe("OpenAIOAuthPlugin", () => {
 			const result = await plugin.tool["codex-health"].execute();
 			expect(result).toContain("Health Check");
 			expect(result).toContain("Healthy");
+
+			// Deterministic per-token rotations keep the shared credential tests
+			// independent of this test's rotated mock storage.
+			const { queuedRefresh } = await import("../lib/refresh-queue.js");
+			vi.mocked(queuedRefresh).mockImplementation(async (token: string) => ({
+				type: "success" as const,
+				access: `${token}-access`,
+				refresh: `${token}-new`,
+				expires: Date.now() + 3_600_000,
+			}));
+		});
+
+		it("persists rotated tokens so a restart does not report refresh_token_reused", async () => {
+			mockStorage.accounts = [
+				{ refreshToken: "old-r1", email: "one@example.com" },
+				{ refreshToken: "old-r2", email: "two@example.com" },
+			];
+			const { queuedRefresh } = await import("../lib/refresh-queue.js");
+			vi.mocked(queuedRefresh).mockImplementation(async (token: string) => ({
+				type: "success" as const,
+				access: `${token}-access`,
+				refresh: `${token}-new`,
+				expires: Date.now() + 3_600_000,
+			}));
+
+			const first = await plugin.tool["codex-health"].execute();
+			expect(first).toContain("2 healthy, 0 unhealthy");
+			expect(mockStorage.accounts.map((account) => account.refreshToken)).toEqual([
+				"old-r1-new",
+				"old-r2-new",
+			]);
+			expect(mockStorage.accounts[0]?.tokenRotatedAt).toBeGreaterThan(0);
+			expect(mockStorage.accounts[1]?.tokenRotatedAt).toBeGreaterThan(0);
+
+			// A restart loads the persisted tokens. Verification rotates them again;
+			// the previous regression left `old-*` on disk, producing refresh_token_reused.
+			const second = await plugin.tool["codex-health"].execute();
+			expect(second).toContain("2 healthy, 0 unhealthy");
+			expect(mockStorage.accounts.map((account) => account.refreshToken)).toEqual([
+				"old-r1-new-new",
+				"old-r2-new-new",
+			]);
+		});
+
+		it("propagates a shared rotated token to workspace sibling records", async () => {
+			mockStorage.accounts = [
+				{
+					refreshToken: "shared-old",
+					email: "one@example.com",
+					organizationId: "org-A",
+					accountId: "org-A",
+					accountIdSource: "org",
+					expiresAt: Date.now() + 3_600_000,
+				},
+				{
+					refreshToken: "shared-old",
+					email: "two@example.com",
+					organizationId: "org-B",
+					accountId: "org-B",
+					accountIdSource: "org",
+					expiresAt: Date.now() + 3_600_000,
+				},
+			];
+			const { queuedRefresh } = await import("../lib/refresh-queue.js");
+			vi.mocked(queuedRefresh)
+				.mockResolvedValueOnce({
+					type: "success" as const,
+					access: "workspace-a-access",
+					refresh: "shared-new",
+					expires: Date.now() + 3_600_000,
+				})
+				.mockResolvedValueOnce({
+					type: "success" as const,
+					access: "workspace-b-access",
+					refresh: "shared-new",
+					expires: Date.now() + 3_600_000,
+				});
+
+			const result = await plugin.tool["codex-health"].execute();
+
+			expect(result).toContain("2 healthy, 0 unhealthy");
+			expect(queuedRefresh).toHaveBeenCalledTimes(2);
+			expect(mockStorage.accounts[0]?.refreshToken).toBe("shared-new");
+			expect(mockStorage.accounts[0]?.accessToken).toBe("workspace-a-access");
+			expect(mockStorage.accounts[1]?.refreshToken).toBe("shared-new");
+			expect(mockStorage.accounts[1]?.accessToken).toBe("workspace-b-access");
+			expect(mockStorage.accounts[1]?.expiresAt).toBeGreaterThan(Date.now());
+		});
+
+		it("skips an independently disabled account without consuming its token", async () => {
+			mockStorage.accounts = [
+				{ refreshToken: "active-old", email: "active@example.com" },
+				{ refreshToken: "disabled-old", email: "disabled@example.com", enabled: false },
+			];
+			const { queuedRefresh } = await import("../lib/refresh-queue.js");
+
+			const result = parseJsonOutput<{
+				healthyCount: number;
+				unhealthyCount: number;
+				skippedCount: number;
+				accounts: Array<{ status: string }>;
+			}>(await plugin.tool["codex-health"].execute({ format: "json" }));
+
+			expect(queuedRefresh).toHaveBeenCalledTimes(1);
+			expect(queuedRefresh).toHaveBeenCalledWith("active-old");
+			expect(result.healthyCount).toBe(1);
+			expect(result.unhealthyCount).toBe(0);
+			expect(result.skippedCount).toBe(1);
+			expect(result.accounts[1]?.status).toBe("skipped");
+			expect(mockStorage.accounts[1]?.refreshToken).toBe("disabled-old");
+		});
+
+		it("reports persistence failure instead of healthy when a rotated token cannot be saved", async () => {
+			mockStorage.accounts = [
+				{ refreshToken: "old-r1", email: "one@example.com" },
+			];
+			const { withAccountStorageTransaction } = await import("../lib/storage.js");
+			vi.mocked(withAccountStorageTransaction).mockImplementationOnce(
+				async <T>(
+					callback: (
+						loadedStorage: typeof mockStorage,
+						persist: (nextStorage: typeof mockStorage) => Promise<void>,
+					) => Promise<T>,
+				) => {
+					const loadedStorage = cloneMockStorage();
+					const persist = async () => {
+						throw new Error("disk full");
+					};
+					return callback(loadedStorage, persist);
+				},
+			);
+
+			const result = parseJsonOutput<{
+				healthyCount: number;
+				unhealthyCount: number;
+				accounts: Array<{ status: string; error?: string }>;
+			}>(await plugin.tool["codex-health"].execute({ format: "json" }));
+
+			expect(result.healthyCount).toBe(0);
+			expect(result.unhealthyCount).toBe(1);
+			expect(result.accounts[0]?.status).toBe("unhealthy");
+			expect(result.accounts[0]?.error).toContain("disk full");
+			expect(mockStorage.accounts[0]?.refreshToken).toBe("old-r1");
 		});
 
 		it("surfaces stale-state and duplicate findings (issue #171)", async () => {
@@ -2839,7 +3239,7 @@ describe("OpenAIOAuthPlugin edge cases", () => {
 		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
 
 		const result = await plugin.tool["codex-health"].execute();
-		expect(result).toContain("Error");
+		expect(result).toContain("Network error");
 		expect(result).toContain("0 healthy, 1 unhealthy");
 	});
 
@@ -2874,8 +3274,7 @@ describe("OpenAIOAuthPlugin edge cases", () => {
 		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
 
 		const result = await plugin.tool["codex-refresh"].execute();
-		expect(result).toContain("Error");
-		expect(result).toContain("Network timeout");
+		expect(result).toContain("Failed - Network timeout");
 	});
 
 	it("handles storage errors in codex-remove", async () => {
@@ -5747,12 +6146,14 @@ describe("OpenAIOAuthPlugin event handler edge cases", () => {
 		});
 	});
 
-	it("reloads account manager from disk when handling account.select", async () => {
+	it("flushes and disposes the cached manager when handling account.select", async () => {
 		const mockClient = createMockClient();
 		const { OpenAIOAuthPlugin } = await import("../index.js");
 		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
 		const { AccountManager } = await import("../lib/accounts.js");
 		const loadFromDiskSpy = vi.spyOn(AccountManager, "loadFromDisk");
+		const flushSpy = vi.spyOn(AccountManager.prototype, "flushPendingSave");
+		const disposeSpy = vi.spyOn(AccountManager.prototype, "disposeShutdownHandler");
 
 		const getAuth = async () => ({
 			type: "oauth" as const,
@@ -5764,12 +6165,62 @@ describe("OpenAIOAuthPlugin event handler edge cases", () => {
 
 		await plugin.auth.loader(getAuth, { options: {}, models: {} });
 		loadFromDiskSpy.mockClear();
+		flushSpy.mockClear();
+		disposeSpy.mockClear();
 
 		await plugin.event({
 			event: { type: "account.select", properties: { index: 1 } },
 		});
 
+		expect(flushSpy).toHaveBeenCalledTimes(1);
 		expect(loadFromDiskSpy).toHaveBeenCalledTimes(1);
+		expect(disposeSpy).toHaveBeenCalledTimes(1);
+		expect(flushSpy.mock.invocationCallOrder[0]).toBeLessThan(
+			loadFromDiskSpy.mock.invocationCallOrder[0]!,
+		);
+		expect(loadFromDiskSpy.mock.invocationCallOrder[0]).toBeLessThan(
+			disposeSpy.mock.invocationCallOrder[0]!,
+		);
+	});
+
+	it("keeps the cached manager when an account.select reload fails", async () => {
+		const mockClient = createMockClient();
+		const { OpenAIOAuthPlugin } = await import("../index.js");
+		const plugin = await OpenAIOAuthPlugin({ client: mockClient } as never) as unknown as PluginType;
+		const { AccountManager } = await import("../lib/accounts.js");
+		const loadFromDiskSpy = vi.spyOn(AccountManager, "loadFromDisk");
+		const flushSpy = vi.spyOn(AccountManager.prototype, "flushPendingSave");
+		const disposeSpy = vi.spyOn(AccountManager.prototype, "disposeShutdownHandler");
+
+		const getAuth = async () => ({
+			type: "oauth" as const,
+			access: "access-token",
+			refresh: "refresh-token",
+			expires: Date.now() + 60_000,
+			multiAccount: true,
+		});
+
+		await plugin.auth.loader(getAuth, { options: {}, models: {} });
+		loadFromDiskSpy.mockClear();
+		flushSpy.mockClear();
+		disposeSpy.mockClear();
+		loadFromDiskSpy.mockRejectedValueOnce(new Error("reload failed"));
+
+		await plugin.event({
+			event: { type: "account.select", properties: { index: 1 } },
+		});
+
+		expect(flushSpy).toHaveBeenCalledTimes(1);
+		expect(loadFromDiskSpy).toHaveBeenCalledTimes(1);
+		expect(disposeSpy).not.toHaveBeenCalled();
+
+		await plugin.event({
+			event: { type: "account.select", properties: { index: 0 } },
+		});
+
+		expect(flushSpy).toHaveBeenCalledTimes(2);
+		expect(loadFromDiskSpy).toHaveBeenCalledTimes(2);
+		expect(disposeSpy).toHaveBeenCalledTimes(1);
 	});
 
 	it("handles openai.account.select with openai provider", async () => {

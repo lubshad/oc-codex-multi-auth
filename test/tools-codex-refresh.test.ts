@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ToolContext } from "../lib/tools/index.js";
 import type { AccountStorageV3 } from "../lib/storage.js";
 import { createCodexRefreshTool } from "../lib/tools/codex-refresh.js";
+import { persistRefreshResult } from "../lib/tools/refresh-account.js";
 import { resolveDisplayEmail } from "../lib/account-display.js";
 
 vi.mock("../lib/storage.js", () => ({
@@ -58,6 +59,7 @@ function buildCtx(maskEmail: boolean): ToolContext {
 		getStatusMarker: () => "[ok]",
 		cachedAccountManagerRef: { current: null },
 		accountManagerPromiseRef: { current: null },
+		reloadCachedAccountManager: async () => {},
 	};
 	return ctx as unknown as ToolContext;
 }
@@ -74,6 +76,17 @@ describe("codex-refresh tool masking", () => {
 			activeIndex: 0,
 			accounts: [{ email: "user@example.com", refreshToken: "r1" }],
 		} as never);
+		vi.mocked(withAccountStorageTransaction).mockImplementation(
+			async (handler) =>
+				handler(
+					{
+						version: 3,
+						activeIndex: 0,
+						accounts: [{ email: "user@example.com", refreshToken: "r1" }],
+					} as never,
+					async () => {},
+				),
+		);
 
 		const tool = createCodexRefreshTool(buildCtx(true));
 		const output = (await tool.execute({}, {} as never)) as string;
@@ -88,6 +101,17 @@ describe("codex-refresh tool masking", () => {
 			activeIndex: 0,
 			accounts: [{ email: "user@example.com", refreshToken: "r1" }],
 		} as never);
+		vi.mocked(withAccountStorageTransaction).mockImplementation(
+			async (handler) =>
+				handler(
+					{
+						version: 3,
+						activeIndex: 0,
+						accounts: [{ email: "user@example.com", refreshToken: "r1" }],
+					} as never,
+					async () => {},
+				),
+		);
 
 		const tool = createCodexRefreshTool(buildCtx(false));
 		const output = (await tool.execute({}, {} as never)) as string;
@@ -225,14 +249,59 @@ describe("codex-refresh tool concurrency (lost-update regression)", () => {
 		);
 
 		const tool = createCodexRefreshTool(buildCtx(false));
-		await tool.execute({}, {} as never);
-
-		expect(persisted).toBeDefined();
-		const persistedAccount = persisted!.accounts[0]!;
+		const output = (await tool.execute({}, {} as never)) as string;
 
 		// The stale outcome (keyed on "old-refresh") must NOT overwrite the
-		// externally-rotated token -- we cannot know which chain is live.
-		expect(persistedAccount.refreshToken).toBe("externally-rotated-refresh");
-		expect(persistedAccount.tokenRotatedAt).toBe(999);
+		// externally-rotated token -- we cannot know which chain is live. The
+		// transaction rejects without persisting, and the tool reports a failure.
+		expect(persisted).toBeUndefined();
+		expect(concurrentStorage.accounts[0]?.refreshToken).toBe(
+			"externally-rotated-refresh",
+		);
+		expect(concurrentStorage.accounts[0]?.tokenRotatedAt).toBe(999);
+		expect(output).toContain("Refresh token changed concurrently");
+		expect(output).toContain("0 refreshed, 1 failed");
+	});
+
+	it("does not overwrite a concurrent re-login when a sibling already holds the rotated token", async () => {
+		const concurrentStorage: AccountStorageV3 = {
+			version: 3,
+			activeIndex: 0,
+			accounts: [
+				{
+					accountId: "target",
+					refreshToken: "fresh-login-token",
+					accessToken: "fresh-login-access",
+					expiresAt: 1_800_000_000_000,
+				},
+				{
+					accountId: "sibling",
+					refreshToken: "new-refresh",
+				},
+			],
+		};
+		const persist = vi.fn(async () => {});
+		vi.mocked(withAccountStorageTransaction).mockImplementation(
+			async (handler) => handler(concurrentStorage, persist),
+		);
+
+		const result = await persistRefreshResult(
+			0,
+			{ accountId: "target", refreshToken: "old-refresh" },
+			{
+				type: "success",
+				access: "stale-rotation-access",
+				refresh: "new-refresh",
+				expires: 1_700_000_000_000,
+			},
+		);
+
+		expect(result.persisted).toBe(false);
+		expect(result.persistError).toContain("changed concurrently");
+		expect(persist).not.toHaveBeenCalled();
+		expect(concurrentStorage.accounts[0]).toMatchObject({
+			refreshToken: "fresh-login-token",
+			accessToken: "fresh-login-access",
+		});
 	});
 });

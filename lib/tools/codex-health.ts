@@ -5,7 +5,6 @@
 
 import { tool, type ToolDefinition } from "@opencode-ai/plugin/tool";
 import { loadAccounts } from "../storage.js";
-import { AccountManager } from "../accounts.js";
 import {
 	findDisabledAccountsWithFreshCredential,
 	findDisabledTokenSourceDuplicates,
@@ -26,8 +25,7 @@ export function createCodexHealthTool(ctx: ToolContext): ToolDefinition {
 		resolveMaskEmail,
 		getStatusMarker,
 		buildJsonAccountIdentity,
-		cachedAccountManagerRef,
-		accountManagerPromiseRef,
+		reloadCachedAccountManager,
 	} = ctx;
 	return tool({
 		description:
@@ -142,11 +140,7 @@ export function createCodexHealthTool(ctx: ToolContext): ToolDefinition {
 				}
 			}
 
-			if (cachedAccountManagerRef.current) {
-				const reloadedManager = await AccountManager.loadFromDisk();
-				cachedAccountManagerRef.current = reloadedManager;
-				accountManagerPromiseRef.current = Promise.resolve(reloadedManager);
-			}
+			await reloadCachedAccountManager();
 
 			results.push("");
 			results.push(

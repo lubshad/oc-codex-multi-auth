@@ -1378,6 +1378,13 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 			}
 		};
 
+		const reloadCachedAccountManager = async (): Promise<void> => {
+			if (!cachedAccountManager) return;
+			const reloadedManager = await AccountManager.loadFromDisk();
+			cachedAccountManager = reloadedManager;
+			accountManagerPromise = Promise.resolve(reloadedManager);
+		};
+
 		const persistAuthenticatedSelections = async (
 			results: TokenSuccessWithAccount[],
 			replaceAll: boolean,
@@ -1480,6 +1487,7 @@ export const OpenAIOAuthPlugin: Plugin = async ({ client }: PluginInput) => {
 					accountManagerPromise = value;
 				},
 			},
+			reloadCachedAccountManager,
 			runtimeMetrics,
 			beginnerSafeModeRef: {
 				get current() {

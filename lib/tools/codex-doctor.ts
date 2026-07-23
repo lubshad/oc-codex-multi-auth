@@ -68,11 +68,12 @@ export function createCodexDoctorTool(ctx: ToolContext): ToolDefinition {
 		formatDoctorSeverityText,
 		runtimeMetrics,
 		cachedAccountManagerRef,
-		accountManagerPromiseRef,
+		reloadCachedAccountManager,
 	} = ctx;
 
 	async function loadDiagnostics(
 		extraFindings: BeginnerDiagnosticFinding[] = [],
+		verificationFailureIdentities: RefreshAccountIdentity[] = [],
 	): Promise<DoctorDiagnostics> {
 		const storage = await loadAccounts();
 		const now = Date.now();
@@ -80,8 +81,17 @@ export function createCodexDoctorTool(ctx: ToolContext): ToolDefinition {
 			storage && storage.accounts.length > 0
 				? resolveActiveIndex(storage, "codex")
 				: 0;
+		const failedIndices = new Set(
+			verificationFailureIdentities
+				.map((identity) => findAccountIndexByIdentity(storage?.accounts ?? [], identity))
+				.filter((index) => index >= 0),
+		);
 		const snapshots = storage
 			? toBeginnerAccountSnapshots(storage, activeIndex, now)
+				.map((snapshot) => ({
+					...snapshot,
+					refreshVerificationFailed: failedIndices.has(snapshot.index),
+				}))
 			: [];
 		const runtime = getBeginnerRuntimeSnapshot();
 		const summary = summarizeBeginnerAccounts(snapshots, now);
@@ -173,7 +183,7 @@ export function createCodexDoctorTool(ctx: ToolContext): ToolDefinition {
 					identity: RefreshAccountIdentity;
 				}> = [];
 				const reloginNeeded: number[] = [];
-				let verificationFailures = 0;
+				const verificationFailureIdentities: RefreshAccountIdentity[] = [];
 				const inputs = buildRefreshInputs(diagnostics.storage.accounts);
 
 				for (const input of inputs) {
@@ -191,7 +201,7 @@ export function createCodexDoctorTool(ctx: ToolContext): ToolDefinition {
 						// remedy is `codex-remove`), and stale-state must never be cleared
 						// on an entry the user disabled on purpose.
 					} else {
-						verificationFailures += 1;
+						verificationFailureIdentities.push(outcome.identity);
 						reloginNeeded.push(outcome.index + 1);
 						fixErrors.push(
 							`Account ${outcome.index + 1}: ${outcome.error} — run \`opencode auth login\` to re-authenticate.`,
@@ -199,11 +209,11 @@ export function createCodexDoctorTool(ctx: ToolContext): ToolDefinition {
 					}
 				}
 
-				if (verificationFailures > 0) {
+				if (verificationFailureIdentities.length > 0) {
 					extraFindings.push({
 						severity: "error",
 						code: "refresh-verification-failed",
-						summary: `${verificationFailures} account(s) failed refresh-token verification.`,
+						summary: `${verificationFailureIdentities.length} account(s) failed refresh-token verification.`,
 						action: `Re-authenticate the affected account(s) with \`opencode auth login\` (slots: ${reloginNeeded.join(", ")}).`,
 					});
 				}
@@ -302,25 +312,42 @@ export function createCodexDoctorTool(ctx: ToolContext): ToolDefinition {
 							return b.tokensAvailable - a.tokensAvailable;
 						});
 					const best = eligible[0];
-					if (best) {
-						const switched = await withAccountStorageTransaction(
+					const bestAccount = best
+						? managerForFix.getAccountsSnapshot()[best.index]
+						: undefined;
+					if (best && bestAccount) {
+						const bestIdentity: RefreshAccountIdentity = {
+							organizationId: bestAccount.organizationId,
+							accountId: bestAccount.accountId,
+							refreshToken: bestAccount.refreshToken,
+						};
+						const switchResult = await withAccountStorageTransaction(
 							async (current, persist) => {
-								if (!current) return false;
+								if (!current) return "missing";
+								const freshBestIndex = findAccountIndexByIdentity(
+									current.accounts,
+									bestIdentity,
+								);
+								if (freshBestIndex < 0) return "missing";
 								const currentActive = resolveActiveIndex(current, "codex");
-								if (best.index === currentActive) return false;
-								current.activeIndex = best.index;
+								if (freshBestIndex === currentActive) return "unchanged";
+								current.activeIndex = freshBestIndex;
 								current.activeIndexByFamily =
 									current.activeIndexByFamily ?? {};
 								for (const family of MODEL_FAMILIES) {
-									current.activeIndexByFamily[family] = best.index;
+									current.activeIndexByFamily[family] = freshBestIndex;
 								}
 								await persist(current);
-								return true;
+								return "switched";
 							},
 						);
-						if (switched) {
+						if (switchResult === "switched") {
 							appliedFixes.push(
 								`Switched active account to ${best.index + 1} (best eligible).`,
+							);
+						} else if (switchResult === "missing") {
+							fixErrors.push(
+								"Selected account changed during auto-switch; no switch was applied.",
 							);
 						}
 					} else {
@@ -336,23 +363,15 @@ export function createCodexDoctorTool(ctx: ToolContext): ToolDefinition {
 					);
 				}
 
-				if (cachedAccountManagerRef.current) {
-					const reloadedManager = await AccountManager.loadFromDisk();
-					cachedAccountManagerRef.current = reloadedManager;
-					accountManagerPromiseRef.current =
-						Promise.resolve(reloadedManager);
-				}
+				await reloadCachedAccountManager();
 
 				// The initial diagnostics snapshot was taken before token verification.
 				// Reload after fixes so the reported health never contradicts live
 				// refresh results (e.g. "8 healthy" alongside eight invalid tokens).
-				diagnostics = await loadDiagnostics(extraFindings);
-				if (verificationFailures > 0 && diagnostics.summary.healthy > 0) {
-					diagnostics.summary.healthy = Math.max(
-						0,
-						diagnostics.summary.healthy - verificationFailures,
-					);
-				}
+				diagnostics = await loadDiagnostics(
+					extraFindings,
+					verificationFailureIdentities,
+				);
 			}
 
 			if (deep) {

@@ -92,6 +92,7 @@ export interface ToolContext {
 	// --- Mutable plugin-closure state ---------------------------------------
 	cachedAccountManagerRef: MutableRef<AccountManager | null>;
 	accountManagerPromiseRef: MutableRef<Promise<AccountManager> | null>;
+	reloadCachedAccountManager: () => Promise<void>;
 
 	// --- Read-only plugin-closure state -------------------------------------
 	runtimeMetrics: RuntimeMetrics;

@@ -2081,6 +2081,128 @@ describe("OpenAIOAuthPlugin", () => {
 			}));
 		});
 
+		it("keeps successful accounts healthy and recommends re-login after mixed verification results", async () => {
+			mockStorage.accounts = [
+				{ refreshToken: "alive-token", email: "alive@example.com" },
+				{ refreshToken: "dead-token", email: "dead@example.com" },
+			];
+			const { queuedRefresh } = await import("../lib/refresh-queue.js");
+			vi.mocked(queuedRefresh).mockImplementation(async (token: string) =>
+				token === "alive-token"
+					? {
+							type: "success" as const,
+							access: "alive-access",
+							refresh: "alive-refresh",
+							expires: Date.now() + 3_600_000,
+						}
+					: {
+							type: "failed" as const,
+							reason: "invalid_grant",
+							message: "refresh token expired",
+						},
+			);
+
+			const result = parseJsonOutput<{
+				summary: { healthyAccounts: number; blockedAccounts: number };
+				findings: Array<{ summary: string }>;
+				recommendedNextAction: string;
+			}>(await plugin.tool["codex-doctor"].execute({ fix: true, format: "json" }));
+			vi.mocked(queuedRefresh).mockImplementation(async () => ({
+				type: "success" as const,
+				access: "refreshed-access",
+				refresh: "refreshed-refresh",
+				expires: Date.now() + 3_600_000,
+			}));
+
+			expect(result.summary).toMatchObject({ healthyAccounts: 1, blockedAccounts: 1 });
+			expect(result.findings.some((finding) =>
+				finding.summary.includes("failed refresh-token verification"),
+			)).toBe(true);
+			expect(result.recommendedNextAction).toContain("opencode auth login");
+		});
+
+		it("re-resolves the selected account identity before auto-switching after storage reorder", async () => {
+			mockStorage.accounts = [
+				{
+					organizationId: "org-current",
+					accountId: "current",
+					refreshToken: "current-token",
+				},
+				{
+					organizationId: "org-best",
+					accountId: "best",
+					refreshToken: "best-token",
+				},
+			];
+			const { queuedRefresh } = await import("../lib/refresh-queue.js");
+			vi.mocked(queuedRefresh).mockImplementation(async () => ({
+				type: "success" as const,
+				access: "refreshed-access",
+				refresh: "refreshed-refresh",
+				expires: Date.now() + 3_600_000,
+			}));
+			const { AccountManager } = await import("../lib/accounts.js");
+			vi.spyOn(AccountManager, "loadFromDisk").mockResolvedValue({
+				getSelectionExplainability: () => [
+					{
+						index: 0,
+						enabled: true,
+						isCurrentForFamily: true,
+						eligible: true,
+						reasons: [],
+						healthScore: 1,
+						tokensAvailable: 1,
+						lastUsed: 1,
+					},
+					{
+						index: 1,
+						enabled: true,
+						isCurrentForFamily: false,
+						eligible: true,
+						reasons: [],
+						healthScore: 2,
+						tokensAvailable: 2,
+						lastUsed: 2,
+					},
+				],
+				getAccountsSnapshot: () => mockStorage.accounts.map((account) => ({
+					...account,
+					addedAt: account.addedAt ?? 0,
+					lastUsed: account.lastUsed ?? 0,
+					rateLimitResetTimes: account.rateLimitResetTimes ?? {},
+				})),
+			} as unknown as InstanceType<typeof AccountManager>);
+			const { withAccountStorageTransaction } = await import("../lib/storage.js");
+			const originalTransaction = vi.mocked(withAccountStorageTransaction).getMockImplementation();
+			let transactionCount = 0;
+			vi.mocked(withAccountStorageTransaction).mockImplementation(
+				async (callback) => {
+					transactionCount += 1;
+					if (transactionCount !== 4) {
+						return originalTransaction!(callback);
+					}
+					const reorderedStorage = {
+						...cloneMockStorage(),
+						accounts: [
+							{ refreshToken: "inserted-token" },
+							...cloneMockStorage().accounts,
+						],
+					};
+					return callback(reorderedStorage, async (nextStorage) => {
+						mockStorage.accounts = nextStorage.accounts.map(cloneAccount);
+						mockStorage.activeIndex = nextStorage.activeIndex;
+						mockStorage.activeIndexByFamily = { ...nextStorage.activeIndexByFamily };
+					});
+				},
+			);
+
+			await plugin.tool["codex-doctor"].execute({ fix: true });
+
+			expect(mockStorage.accounts[mockStorage.activeIndex]?.accountId).toBe("best");
+			expect(mockStorage.activeIndex).toBe(2);
+			vi.mocked(withAccountStorageTransaction).mockImplementation(originalTransaction);
+		});
+
 		it("persists rotated tokens transactionally during fix and preserves concurrent state", async () => {
 			mockStorage.accounts = [
 				{

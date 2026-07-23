@@ -5,7 +5,6 @@
 
 import { tool, type ToolDefinition } from "@opencode-ai/plugin/tool";
 import { loadAccounts } from "../storage.js";
-import { AccountManager } from "../accounts.js";
 import { formatUiHeader, formatUiItem, paintUiText } from "../ui/format.js";
 import {
 	buildRefreshInputs,
@@ -19,8 +18,7 @@ export function createCodexRefreshTool(ctx: ToolContext): ToolDefinition {
 		formatCommandAccountLabel,
 		resolveMaskEmail,
 		getStatusMarker,
-		cachedAccountManagerRef,
-		accountManagerPromiseRef,
+		reloadCachedAccountManager,
 	} = ctx;
 	return tool({
 		description:
@@ -74,11 +72,7 @@ export function createCodexRefreshTool(ctx: ToolContext): ToolDefinition {
 				}
 			}
 
-			if (cachedAccountManagerRef.current) {
-				const reloadedManager = await AccountManager.loadFromDisk();
-				cachedAccountManagerRef.current = reloadedManager;
-				accountManagerPromiseRef.current = Promise.resolve(reloadedManager);
-			}
+			await reloadCachedAccountManager();
 			results.push("");
 			if (skippedCount > 0) {
 				results.push(

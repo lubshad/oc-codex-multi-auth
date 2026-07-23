@@ -12,6 +12,10 @@ import {
 	withAccountStorageTransaction,
 	type AccountMetadataV3,
 } from "../storage.js";
+import {
+	findAccountIndexByIdentityKeys,
+	toAccountIdentityKeys,
+} from "../storage/identity.js";
 import type { TokenResult } from "../types.js";
 
 export interface RefreshAccountIdentity {
@@ -42,37 +46,11 @@ export type AccountRefreshOutcome =
 	| { status: "failed"; index: number; identity: RefreshAccountIdentity; error: string }
 	| { status: "refreshed"; index: number; result: PersistedRefreshResult };
 
-/**
- * Finds the index of the account matching `identity`, using the same
- * organizationId -> accountId -> refreshToken priority order the storage
- * layer's dedup/identity helpers use elsewhere (see
- * `lib/storage/identity.ts`). Kept local rather than importing the shared
- * helper because the barrel does not currently re-export it.
- */
 export function findAccountIndexByIdentity(
 	accounts: RefreshAccountIdentity[],
 	identity: RefreshAccountIdentity,
 ): number {
-	const organizationId = identity.organizationId?.trim();
-	if (organizationId) {
-		const idx = accounts.findIndex(
-			(a) => a.organizationId?.trim() === organizationId,
-		);
-		if (idx >= 0) return idx;
-	}
-	const accountId = identity.accountId?.trim();
-	if (accountId) {
-		const idx = accounts.findIndex((a) => a.accountId?.trim() === accountId);
-		if (idx >= 0) return idx;
-	}
-	const refreshToken = identity.refreshToken?.trim();
-	if (refreshToken) {
-		const idx = accounts.findIndex(
-			(a) => a.refreshToken?.trim() === refreshToken,
-		);
-		if (idx >= 0) return idx;
-	}
-	return -1;
+	return findAccountIndexByIdentityKeys(accounts, toAccountIdentityKeys(identity));
 }
 
 /**
@@ -133,29 +111,6 @@ export async function persistRefreshResult(
 				// non-credential state in the fresh snapshot.
 				target.accessToken = refreshResult.access;
 				target.expiresAt = refreshResult.expires;
-			} else if (rotated) {
-				const replacementCount = current.accounts.filter(
-					(account) => account.refreshToken === refreshResult.refresh,
-				).length;
-				// The queued refresh can hand the exact same rotation result to every
-				// sibling sharing a consumed token. After the first sibling persists,
-				// later siblings should accept that propagated replacement and attach
-				// their own workspace-specific access token. The target may have been
-				// located by a stale workspace id (access tokens can re-mint account
-				// ids), so a consumed token elsewhere in storage must not make us
-				// treat this rotation as already propagated to the target.
-				const rotationAlreadyPersisted = replacementCount > 0;
-				if (!rotationAlreadyPersisted) {
-					throw new Error(
-						"Refresh token changed concurrently while verification was in progress",
-					);
-				}
-				target.refreshToken = refreshResult.refresh;
-				target.accessToken = refreshResult.access;
-				target.expiresAt = refreshResult.expires;
-				if (rotatedAt !== undefined) {
-					target.tokenRotatedAt = rotatedAt;
-				}
 			} else {
 				// The refresh was keyed off `identity.refreshToken` (the consumed,
 				// pre-rotation value). If storage carries neither that token nor the

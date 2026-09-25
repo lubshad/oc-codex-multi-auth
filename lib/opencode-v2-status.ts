@@ -48,7 +48,9 @@ export async function readV2Status({ width }: { width: number }) {
 	const maskEmail = getCodexTuiMaskEmail(config);
 	const snapshot = await readTuiQuotaSnapshot();
 	const pool = await loadAccounts();
-	const servingIndex = snapshot?.source === "headers"
+	// The headers cache is global: project pools seeded from the same accounts
+	// share fingerprints, so it cannot attribute a request to this project.
+	const servingIndex = !getCurrentProjectRoot() && snapshot?.source === "headers" && isFreshTuiQuotaSnapshot(snapshot)
 		? pool?.accounts.findIndex((account) => createUsageAccountFingerprint(account) === snapshot.fingerprint)
 		: undefined;
 	const owned = snapshot && pool?.accounts.some((account) => createUsageAccountFingerprint(account) === snapshot.fingerprint);

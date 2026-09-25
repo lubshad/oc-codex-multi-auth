@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
 	resetsParams: vi.fn(),
 	sharedSnapshot: vi.fn(),
 	projectRoot: null as string | null,
+	freshSnapshot: true,
 	quotaStatus: undefined as Record<string, unknown> | undefined,
 }));
 
@@ -28,7 +29,7 @@ vi.mock("../lib/storage/state.js", () => ({
 vi.mock("../lib/tui-quota-cache.js", () => ({
 	readTuiQuotaSnapshot: mocks.sharedSnapshot,
 	readTuiQuotaOverviewSnapshot: mocks.cachedOverview,
-	isFreshTuiQuotaSnapshot: () => false,
+	isFreshTuiQuotaSnapshot: () => mocks.freshSnapshot,
 	TUI_QUOTA_OVERVIEW_CACHE_FILE: "overview.json",
 }));
 vi.mock("../lib/tui-quota-overview.js", () => ({
@@ -53,6 +54,7 @@ beforeEach(() => {
 	mocks.sharedSnapshot.mockResolvedValue(null);
 	mocks.quotaStatus = undefined;
 	mocks.projectRoot = null;
+	mocks.freshSnapshot = true;
 });
 
 it("reports the effective account storage scope", async () => {
@@ -79,9 +81,24 @@ it("marks the account serving requests rather than the selected pool account", a
 		fetchedAt: Date.now(), limits: [],
 	});
 	expect((await readV2Status({ width: 80 })).accounts.map((account) => account.active)).toEqual([true, false]);
+	mocks.freshSnapshot = false;
+	expect((await readV2Status({ width: 80 })).accounts.map((account) => account.active)).toEqual([false, true]);
+	mocks.freshSnapshot = true;
 
 	// Another project or a removed account must not influence this pool's sidebar.
 	mocks.sharedSnapshot.mockResolvedValue({ source: "headers", fingerprint: "other-pool", fetchedAt: Date.now(), limits: [] });
+	expect((await readV2Status({ width: 80 })).accounts.map((account) => account.active)).toEqual([false, true]);
+});
+
+it("does not attribute a shared headers snapshot to another seeded project", async () => {
+	mocks.overview.mockResolvedValue(null);
+	mocks.sharedSnapshot.mockResolvedValue({
+		source: "headers", fingerprint: createUsageAccountFingerprint({ refreshToken: "private-refresh" }),
+		fetchedAt: Date.now(), limits: [],
+	});
+	mocks.projectRoot = "/tmp/opencode/project-a";
+	expect((await readV2Status({ width: 80 })).accounts.map((account) => account.active)).toEqual([false, true]);
+	mocks.projectRoot = "/tmp/opencode/project-b";
 	expect((await readV2Status({ width: 80 })).accounts.map((account) => account.active)).toEqual([false, true]);
 });
 

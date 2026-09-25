@@ -82,6 +82,9 @@ describe("V2 accounts UI", () => {
 		status.mockRejectedValue(new Error("offline"));
 		await vi.advanceTimersByTimeAsync(2000);
 		expect(sidebar.children).toContain("Accounts unavailable");
+		await commands.find((command) => command.id === "codex.accounts")!.run();
+		expect(alert.mock.calls[2]?.[0].message).toContain("Account storage: unavailable");
+		expect(alert.mock.calls[2]?.[0].message).not.toContain("the global pool is shared");
 		for (const cleanup of mocks.cleanups.splice(0)) cleanup();
 		const calls = status.mock.calls.length;
 		await vi.advanceTimersByTimeAsync(4000);

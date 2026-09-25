@@ -7,7 +7,7 @@ import { CodexStatusRpc } from "./opencode-v2-rpc.js";
 export function setupV2Tui(context: Plugin.Context) {
 	const [text, setText] = createSignal("");
 	const [accounts, setAccounts] = createSignal("Loading accounts…");
-	const [accountStorage, setAccountStorage] = createSignal<"project" | "global">("global");
+	const [accountStorage, setAccountStorage] = createSignal<"project" | "global" | "unknown">("unknown");
 	const [showFor, setShowFor] = createSignal("always");
 	const disposers = [context.ui.slot({
 		append: "app",
@@ -35,6 +35,7 @@ export function setupV2Tui(context: Plugin.Context) {
 				} catch {
 					if (!disposed) {
 						setText("limits ?");
+						setAccountStorage("unknown");
 						setAccounts("Accounts unavailable — retry shortly.");
 						details = "Quota unavailable — retry shortly.";
 					}
@@ -61,7 +62,9 @@ export function setupV2Tui(context: Plugin.Context) {
 							title: "Codex accounts",
 							message: `${accounts()}\n\n${accountStorage() === "project"
 								? "Account storage: this project uses its own pool. If it has no account file yet, an existing global pool is used to seed it; later changes stay in this project."
-								: "Account storage: the global pool is shared across projects."}\nTo change this, set "perProjectAccounts" to true (per-project) or false (global) in ~/.opencode/openai-codex-auth-config.json, then restart the OpenCode service and TUI. CODEX_AUTH_PER_PROJECT_ACCOUNTS overrides this setting: 1 enables per-project storage; 0 disables it.\n\nAdd an account: run opencode auth login${accountStorage() === "project" ? " from this project directory" : ""}, then select OpenAI → Codex OAuth (Add account — ChatGPT Plus/Pro). Repeat for each account, using a private browser window to choose a different login.`,
+								: accountStorage() === "global"
+									? "Account storage: the global pool is shared across projects."
+									: "Account storage: unavailable — retry shortly to check which pool is in use."}\nTo change this, set "perProjectAccounts" to true (per-project) or false (global) in ~/.opencode/openai-codex-auth-config.json, then restart the OpenCode service and TUI. CODEX_AUTH_PER_PROJECT_ACCOUNTS overrides this setting: 1 enables per-project storage; 0 disables it.\n\nAdd an account: run opencode auth login${accountStorage() === "project" ? " from this project directory" : ""}, then select OpenAI → Codex OAuth (Add account — ChatGPT Plus/Pro). Repeat for each account, using a private browser window to choose a different login.`,
 						});
 					},
 				}],

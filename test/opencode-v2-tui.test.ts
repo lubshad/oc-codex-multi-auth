@@ -27,6 +27,7 @@ describe("V2 accounts UI", () => {
 		const commands: Array<{ id: string; run: () => Promise<void> }> = [];
 		const status = vi.fn().mockResolvedValue({
 			text: "quota ready", details: "Quota details", showFor: "codex-models",
+			accountStorage: "project",
 			accounts: [
 				{ index: 1, label: "First", active: true, enabled: true },
 				{ index: 2, label: "Second", active: false, enabled: false },
@@ -55,6 +56,21 @@ describe("V2 accounts UI", () => {
 		expect(status).toHaveBeenCalledWith({ width: 60 }, expect.objectContaining({ location: context.location }));
 		await commands.find((command) => command.id === "codex.accounts")!.run();
 		expect(alert).toHaveBeenCalledWith(expect.objectContaining({ title: "Codex accounts", message: expect.stringContaining("opencode auth login") }));
+		expect(alert.mock.calls[0]?.[0].message).toContain("this project uses its own pool");
+		expect(alert.mock.calls[0]?.[0].message).toContain("global pool is used to seed it");
+		expect(alert.mock.calls[0]?.[0].message).toContain('"perProjectAccounts" to true (per-project) or false (global)');
+		expect(alert.mock.calls[0]?.[0].message).toContain("CODEX_AUTH_PER_PROJECT_ACCOUNTS overrides this setting");
+		status.mockResolvedValueOnce({
+			text: "quota ready", details: "Quota details", showFor: "codex-models",
+			accountStorage: "global", accounts: [
+				{ index: 1, label: "First", active: true, enabled: true },
+				{ index: 2, label: "Second", active: false, enabled: false },
+			],
+		});
+		await commands.find((command) => command.id === "codex.accounts")!.run();
+		expect(alert.mock.calls[1]?.[0].message).toContain("global pool is shared across projects");
+		expect(alert.mock.calls[1]?.[0].message).toContain("~/.opencode/openai-codex-auth-config.json");
+		expect(alert.mock.calls[1]?.[0].message).not.toContain("from this project directory");
 		// Hiding Codex quota for a different provider must not hide the account list.
 		expect(slots.get("prompt.footer.status")!.render({ sessionID: "test" })!.children).toBe("");
 		messages.push({ type: "assistant", model: { providerID: "openai" } }, { type: "user" });

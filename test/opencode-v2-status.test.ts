@@ -5,6 +5,8 @@ const mocks = vi.hoisted(() => ({
 	cachedOverview: vi.fn(),
 	promptStatus: vi.fn(),
 	resetsParams: vi.fn(),
+	sharedSnapshot: vi.fn(),
+	projectRoot: null as string | null,
 	quotaStatus: undefined as Record<string, unknown> | undefined,
 }));
 
@@ -20,8 +22,11 @@ vi.mock("../lib/storage.js", () => ({
 		{ accountLabel: "Work", email: "second@example.com", refreshToken: "another-refresh" },
 	] }),
 }));
+vi.mock("../lib/storage/state.js", () => ({
+	getCurrentProjectRoot: () => mocks.projectRoot,
+}));
 vi.mock("../lib/tui-quota-cache.js", () => ({
-	readTuiQuotaSnapshot: async () => null,
+	readTuiQuotaSnapshot: mocks.sharedSnapshot,
 	readTuiQuotaOverviewSnapshot: mocks.cachedOverview,
 	isFreshTuiQuotaSnapshot: () => false,
 	TUI_QUOTA_OVERVIEW_CACHE_FILE: "overview.json",
@@ -44,7 +49,17 @@ beforeEach(() => {
 	resetV2StatusThrottle();
 	mocks.overview.mockReset();
 	mocks.cachedOverview.mockReset();
+	mocks.sharedSnapshot.mockReset();
+	mocks.sharedSnapshot.mockResolvedValue(null);
 	mocks.quotaStatus = undefined;
+	mocks.projectRoot = null;
+});
+
+it("reports the effective account storage scope", async () => {
+	mocks.overview.mockResolvedValue(null);
+	expect((await readV2Status({ width: 80 })).accountStorage).toBe("global");
+	mocks.projectRoot = "/tmp/opencode/project";
+	expect((await readV2Status({ width: 80 })).accountStorage).toBe("project");
 });
 
 it("lists every account with masked identities even when quota is unavailable", async () => {
@@ -55,6 +70,28 @@ it("lists every account with masked identities even when quota is unavailable", 
 		{ index: 2, label: "Work", active: true, enabled: true },
 	]);
 	expect(JSON.stringify(result)).not.toMatch(/private-refresh|private-access|another-refresh|first@example.com|second@example.com/);
+});
+
+it("marks the account serving requests rather than the selected pool account", async () => {
+	mocks.overview.mockResolvedValue(null);
+	mocks.sharedSnapshot.mockResolvedValue({
+		source: "headers", fingerprint: createUsageAccountFingerprint({ refreshToken: "private-refresh" }),
+		fetchedAt: Date.now(), limits: [],
+	});
+	expect((await readV2Status({ width: 80 })).accounts.map((account) => account.active)).toEqual([true, false]);
+
+	// Another project or a removed account must not influence this pool's sidebar.
+	mocks.sharedSnapshot.mockResolvedValue({ source: "headers", fingerprint: "other-pool", fetchedAt: Date.now(), limits: [] });
+	expect((await readV2Status({ width: 80 })).accounts.map((account) => account.active)).toEqual([false, true]);
+});
+
+it("does not mistake a usage poll for a serving-account change", async () => {
+	mocks.overview.mockResolvedValue(null);
+	mocks.sharedSnapshot.mockResolvedValue({
+		source: "usage", fingerprint: createUsageAccountFingerprint({ refreshToken: "private-refresh" }),
+		fetchedAt: Date.now(), limits: [],
+	});
+	expect((await readV2Status({ width: 80 })).accounts.map((account) => account.active)).toEqual([false, true]);
 });
 
 it("uses a one-based account index in the V2 quota status", async () => {
